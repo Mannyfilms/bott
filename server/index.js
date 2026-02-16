@@ -1,72 +1,104 @@
-const express = require('express');
-const path = require('path');
-const cookieParser = require('cookie-parser');
-const jwt = require('jsonwebtoken');
-const { verifyCode } = require('./database.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { getOrCreateUser, revokeUser } = require('../server/database.js');
 
-require('../bot/index.js');
+const TOKEN = process.env.DISCORD_TOKEN;
+const GUILD_ID = process.env.DISCORD_GUILD_ID;
+const REQUIRED_ROLE = 'subscriber';
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-const SECRET = process.env.API_SECRET || 'change-this-to-a-random-string';
+if (!TOKEN) {
+  console.error('DISCORD_TOKEN not set! Bot will not start.');
+  return;
+}
 
-app.use(express.json());
-app.use(cookieParser());
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+});
 
-function requireAuth(req, res, next) {
-  const token = req.cookies?.session;
-  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+async function registerCommands() {
+  const commands = [
+    new SlashCommandBuilder().setName('getaccess').setDescription('Get your personal access code for the BTC Prediction dashboard'),
+    new SlashCommandBuilder().setName('mycode').setDescription('View your existing access code'),
+    new SlashCommandBuilder().setName('revoke').setDescription('Revoke access for a user (admin only)')
+      .addUserOption(opt => opt.setName('user').setDescription('The user to revoke').setRequired(true))
+  ].map(cmd => cmd.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
-    const payload = jwt.verify(token, SECRET);
-    req.user = payload;
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Invalid or expired session' });
+    if (GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
+    } else {
+      await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    }
+    console.log('Slash commands registered');
+  } catch (error) {
+    console.error('Failed to register commands:', error);
   }
 }
 
-app.post('/api/verify', (req, res) => {
-  const { code } = req.body;
-  if (!code) return res.status(400).json({ error: 'Code required' });
-  const user = verifyCode(code);
-  if (!user) return res.status(403).json({ error: 'Invalid or revoked code' });
-  const token = jwt.sign(
-    { discordId: user.discord_id, username: user.discord_username },
-    SECRET,
-    { expiresIn: '7d' }
-  );
-  res.cookie('session', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  });
-  return res.json({ success: true, username: user.discord_username });
+function hasRole(member) {
+  return member.roles.cache.some(role => role.name.toLowerCase() === REQUIRED_ROLE.toLowerCase());
+}
+
+client.once('ready', async () => {
+  console.log('Discord bot logged in as ' + client.user.tag);
+  await registerCommands();
 });
 
-app.get('/api/me', requireAuth, (req, res) => {
-  return res.json({ authenticated: true, username: req.user.username });
-});
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  const { commandName, user, member } = interaction;
 
-app.post('/api/logout', (req, res) => {
-  res.clearCookie('session');
-  return res.json({ success: true });
-});
-
-app.get('/app', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'public', 'app.html'));
-});
-
-app.use(express.static(path.join(__dirname, '..', 'public')));
-
-app.get('/', (req, res) => {
-  const token = req.cookies?.session;
-  if (token) {
-    try { jwt.verify(token, SECRET); return res.redirect('/app'); } catch (e) {}
+  if (commandName === 'getaccess') {
+    if (!hasRole(member)) {
+      return interaction.reply({
+        content: 'You need the **Subscriber** role to access this. Subscribe to get access!',
+        ephemeral: true
+      });
+    }
+    try {
+      const { code, isNew } = getOrCreateUser(user.id, user.username);
+      await interaction.reply({
+        content: isNew
+          ? '**Your access code:**\n\n`' + code + '`\n\nEnter this on the website to log in. This code is tied to your Discord account. Use `/mycode` anytime to see it again.'
+          : '**Your access code:**\n\n`' + code + '`\n\nSame code as before. Enter it on the website to log in.',
+        ephemeral: true
+      });
+    } catch (error) {
+      await interaction.reply({ content: 'Something went wrong. Try again.', ephemeral: true });
+    }
   }
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+
+  if (commandName === 'mycode') {
+    if (!hasRole(member)) {
+      return interaction.reply({
+        content: 'You need the **Subscriber** role to use this.',
+        ephemeral: true
+      });
+    }
+    try {
+      const { code } = getOrCreateUser(user.id, user.username);
+      await interaction.reply({ content: 'Your code: `' + code + '`', ephemeral: true });
+    } catch (error) {
+      await interaction.reply({ content: 'Something went wrong.', ephemeral: true });
+    }
+  }
+
+  if (commandName === 'revoke') {
+    if (!member.permissions.has('Administrator')) {
+      return interaction.reply({ content: 'You need Administrator permission.', ephemeral: true });
+    }
+    const targetUser = interaction.options.getUser('user');
+    const revoked = revokeUser(targetUser.id);
+    await interaction.reply({
+      content: revoked ? 'Access revoked for **' + targetUser.username + '**.' : 'No active access found for that user.',
+      ephemeral: true
+    });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log('Server running on port ' + PORT);
+client.on('guildMemberRemove', (member) => {
+  revokeUser(member.id);
+  console.log(member.user.username + ' left - access revoked');
 });
+
+client.login(TOKEN);
