@@ -4,14 +4,12 @@
   "description": "Discord-gated BTC prediction dashboard",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "start": "node server/index.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "crypto": "^1.0.1",
     "discord.js": "^14.16.3",
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
