@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BTC Prediction - Login</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#08090d;--surface:#13151c;--border:rgba(255,255,255,.06);--text:#edeef2;--text-2:#a0a5b8;--text-3:#5d6277;--btc:#f7931a;--down:#ff4757}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
+        .glow{position:fixed;border-radius:50%;filter:blur(100px);pointer-events:none}
+        .glow.a{width:420px;height:420px;background:var(--btc);opacity:.06;top:10%;left:15%}
+        .glow.b{width:350px;height:350px;background:#636bff;opacity:.05;bottom:10%;right:15%}
+        .card{position:relative;z-index:2;text-align:center;animation:fadeUp .65s ease}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+        .mark{width:64px;height:64px;border-radius:18px;background:linear-gradient(140deg,var(--btc),#e07c0e);display:grid;place-items:center;margin:0 auto 24px;font-size:28px;box-shadow:0 12px 40px rgba(247,147,26,.18)}
+        h1{font-size:1.55em;font-weight:600;letter-spacing:-.02em;margin-bottom:4px}
+        p{font-size:.92em;color:var(--text-2);margin-bottom:32px}
+        .field{width:300px;margin:0 auto 14px}
+        input{width:100%;padding:14px 18px;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.95em;outline:none;transition:border-color .2s,box-shadow .2s;text-align:center;letter-spacing:.12em;text-transform:uppercase}
+        input::placeholder{color:var(--text-3);text-transform:none;letter-spacing:0}
+        input:focus{border-color:rgba(247,147,26,.45);box-shadow:0 0 0 3px rgba(247,147,26,.08)}
+        button{width:300px;padding:14px;border:none;border-radius:10px;background:linear-gradient(140deg,var(--btc),#e07c0e);color:#fff;font-family:'Outfit',sans-serif;font-size:.95em;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s;box-shadow:0 4px 20px rgba(247,147,26,.2)}
+        button:hover{transform:translateY(-1px);box-shadow:0 6px 28px rgba(247,147,26,.28)}
+        button:active{transform:translateY(0)}
+        button:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
+        .err{color:var(--down);font-size:.82em;margin-top:12px;min-height:20px}
+        .hint{font-size:.78em;color:var(--text-3);margin-top:24px;line-height:1.5}
+        @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+        .shake{animation:shake .35s ease}
+    </style>
+</head>
+<body>
+    <div class="glow a"></div>
+    <div class="glow b"></div>
+    <div class="card">
+        <div class="mark">&#8383;</div>
+        <h1>Welcome</h1>
+        <p>Enter your access code from Discord</p>
+        <div class="field" id="field">
+            <input type="text" id="code" placeholder="XXXX-XXXX" maxlength="9" autocomplete="off">
+        </div>
+        <button id="btn" onclick="verify()">Continue</button>
+        <div class="err" id="err">&nbsp;</div>
+        <div class="hint">Don't have a code? Use <strong>/getaccess</strong> in Discord.</div>
+    </div>
+    <script>
+        fetch('/api/me').then(r=>{if(r.ok)window.location.href='/app'});
+        const inp=document.getElementById('code');
+        inp.addEventListener('input',e=>{let v=e.target.value.replace(/[^A-Za-z0-9]/g,'').toUpperCase();if(v.length>4)v=v.slice(0,4)+'-'+v.slice(4,8);e.target.value=v});
+        inp.addEventListener('keydown',e=>{if(e.key==='Enter')verify()});
+        async function verify(){
+            const btn=document.getElementById('btn'),err=document.getElementById('err'),code=inp.value.trim();
+            if(!code){showErr('Please enter your code');return}
+            btn.disabled=true;btn.textContent='Verifying...';err.innerHTML='&nbsp;';
+            try{
+                const res=await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
+                const data=await res.json();
+                if(res.ok&&data.success){btn.textContent='Welcome, '+data.username+'!';btn.style.background='#22c55e';setTimeout(()=>window.location.href='/app',800)}
+                else{showErr(data.error||'Invalid code');btn.disabled=false;btn.textContent='Continue'}
+            }catch(e){showErr('Connection error. Try again.');btn.disabled=false;btn.textContent='Continue'}
+        }
+        function showErr(msg){document.getElementById('err').textContent=msg;document.getElementById('field').classList.add('shake');setTimeout(()=>document.getElementById('field').classList.remove('shake'),350);inp.value=''}
+    </script>
+</body>
+</html>
