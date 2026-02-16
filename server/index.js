@@ -3,7 +3,7 @@ const { getOrCreateUser, revokeUser } = require('../server/database.js');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.DISCORD_GUILD_ID;
-const REQUIRED_ROLE = 'subscriber';
+const REQUIRED_ROLE_ID = '1472956989461237811';
 
 if (!TOKEN) {
   console.error('DISCORD_TOKEN not set! Bot will not start.');
@@ -36,7 +36,7 @@ async function registerCommands() {
 }
 
 function hasRole(member) {
-  return member.roles.cache.some(role => role.name.toLowerCase() === REQUIRED_ROLE.toLowerCase());
+  return member.roles.cache.has(REQUIRED_ROLE_ID);
 }
 
 client.once('ready', async () => {
