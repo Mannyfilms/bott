@@ -265,6 +265,19 @@ let signalPerformance={};
 let stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};
 let externalData={fearGreed:50,sentiment:'NEUTRAL',btcDominance:50,fundingRate:0,exchangeFlow:'NEUTRAL',whaleActivity:'LOW'};
 
+// ═══ PREDICTION LOCK SYSTEM ═══
+let predictionLock={
+  locked:false,        // Is prediction currently locked?
+  direction:null,      // true=YES, false=NO
+  lockPrice:null,      // Price when locked
+  lockTime:null,       // When it was locked
+  lockPtb:null,        // PTB when locked
+  overrideThreshold:100 // $ move needed to override lock
+};
+function resetPredictionLock(){
+  predictionLock={locked:false,direction:null,lockPrice:null,lockTime:null,lockPtb:null,overrideThreshold:100};
+}
+
 // Per-timeframe market state
 let markets={
   5:{priceToBeat:null,currentSlot:null,currentPrediction:null},
@@ -1090,10 +1103,58 @@ document.getElementById('sma5').textContent=s5?'$'+s5.toFixed(2):'--';document.g
 if(vols.length>=20){const rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10,vc=((rv-ov)/ov*100).toFixed(1);document.getElementById('volumeTrend').textContent=(vc>0?'+ ':'- ')+vc+'%';document.getElementById('volumeTrend').style.color=vc>0?'var(--up)':'var(--dn)'}
 updateExt();
 const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe);
-if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb);m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
-const pb=document.getElementById('predictionDisplay');pb.className=pred.willBeat?'pred pred-up':'pred pred-dn';
-document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(pred.willBeat?'&#8593; YES':'&#8595; NO')+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(pred.willBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
-document.getElementById('predictionConfidence').textContent='Confidence: '+pred.confidence+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=pred.confidence+'%';document.getElementById('confPercent').textContent=pred.confidence+'%';const cf=parseFloat(pred.confidence);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
+if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb);
+
+// ═══ PREDICTION LOCK SYSTEM ═══
+const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
+const lockAfter=60; // Lock after 60 seconds (1 minute)
+let displayWillBeat=pred.willBeat;
+let displayConf=pred.confidence;
+let lockStatus='';
+
+if(!predictionLock.locked){
+  // Not locked yet — check if we should lock
+  if(timeInSlot>=lockAfter){
+    // LOCK IT
+    predictionLock.locked=true;
+    predictionLock.direction=pred.willBeat;
+    predictionLock.lockPrice=price;
+    predictionLock.lockTime=Date.now();
+    predictionLock.lockPtb=ptb;
+    displayWillBeat=pred.willBeat;
+    lockStatus=' 🔒 LOCKED';
+  }else{
+    // Still analyzing — show live prediction with countdown to lock
+    const secsToLock=Math.ceil(lockAfter-timeInSlot);
+    lockStatus=' ⏳ Locking in '+secsToLock+'s';
+  }
+}else{
+  // LOCKED — use locked direction unless dramatic override
+  const priceMoveFromLock=Math.abs(price-predictionLock.lockPrice);
+  const priceVsPtb=price-ptb;
+  const lockedSaysYes=predictionLock.direction;
+  
+  // Override conditions: price moved $100+ AND now clearly on the other side of PTB
+  const shouldOverride=priceMoveFromLock>predictionLock.overrideThreshold&&
+    ((lockedSaysYes&&priceVsPtb<-50)||(!lockedSaysYes&&priceVsPtb>50));
+  
+  if(shouldOverride){
+    // OVERRIDE — dramatic move in opposite direction
+    predictionLock.direction=pred.willBeat;
+    predictionLock.lockPrice=price;
+    displayWillBeat=pred.willBeat;
+    lockStatus=' ⚠️ OVERRIDDEN (moved $'+priceMoveFromLock.toFixed(0)+')';
+  }else{
+    // Stay with locked prediction
+    displayWillBeat=predictionLock.direction;
+    lockStatus=' 🔒 LOCKED';
+  }
+}
+
+m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
+const pb=document.getElementById('predictionDisplay');pb.className=displayWillBeat?'pred pred-up':'pred pred-dn';
+document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(displayWillBeat?'&#8593; YES':'&#8595; NO')+lockStatus+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(displayWillBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
+document.getElementById('predictionConfidence').textContent='Confidence: '+displayConf+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=displayConf+'%';document.getElementById('confPercent').textContent=displayConf+'%';const cf=parseFloat(displayConf);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
 ['model1','model2','model3'].forEach((id,i)=>{const k=['lstm','technical','hybrid'][i],v=pred.modelPredictions[k];document.getElementById(id+'Pred').textContent=v>.5?'UP ↑':'DOWN ↓';document.getElementById(id+'Pred').style.color=v>.5?'var(--up)':'var(--dn)';document.getElementById(id+'Conf').textContent=(v*100).toFixed(1)+'%'});
 if(pred.pattern){document.getElementById('patternSection').style.display='block';document.getElementById('patternName').textContent=pred.pattern.pattern+' — '+pred.pattern.signal}else document.getElementById('patternSection').style.display='none';
 displaySignals(pred.signals);updateCountdown()}}
@@ -1207,6 +1268,7 @@ if(priceHistory.length>500)priceHistory.shift();
     if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory(); // New slot = fresh tracking
+    if(tf===selectedTimeframe)resetPredictionLock(); // New slot = unlock prediction
   }
   if(m.currentSlot!==currentSlot){
     m.priceToBeat=price;
