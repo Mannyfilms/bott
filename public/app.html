@@ -409,40 +409,16 @@ function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/w
 connectPolyWs();
 connectBtcWs();
 
-// ═══ FETCH PTB FROM POLYMARKET ═══
-// Polymarket event slugs: btc-updown-5m-{unix_timestamp}
-// timestamp = floor(now / 300) * 300 (5-min windows aligned to epoch)
+// ═══ FETCH PTB FROM POLYMARKET (via server proxy) ═══
 async function fetchPolymarketPTB(){
   try{
-    // Get server-aligned timestamp (Polymarket uses UTC epoch / 300)
-    const nowSec=Math.floor(Date.now()/1000);
-    const windowTs=nowSec-(nowSec%300);
-    
-    // Try current window and previous window (in case we're right at the boundary)
-    for(const ts of [windowTs, windowTs-300]){
-      const slug='btc-updown-5m-'+ts;
-      try{
-        const r=await fetch('https://gamma-api.polymarket.com/events?slug='+slug+'&active=true');
-        if(!r.ok)continue;
-        const data=await r.json();
-        if(data&&data.length>0){
-          const evt=data[0];
-          // Look for startPrice, priceToBeat, or extract from description/title
-          if(evt.startPrice)return parseFloat(evt.startPrice);
-          // Check in markets
-          if(evt.markets&&evt.markets.length>0){
-            const mkt=evt.markets[0];
-            if(mkt.startPrice)return parseFloat(mkt.startPrice);
-            // Try extracting from description
-            const txt=mkt.description||mkt.question||evt.title||'';
-            const m=txt.match(/\$([0-9,]+\.\d+)/);
-            if(m){const p=parseFloat(m[1].replace(/,/g,''));if(p>10000)return p}
-          }
-        }
-      }catch(ex){continue}
-    }
+    const r=await fetch('/api/polymarket-ptb');
+    const data=await r.json();
+    console.log('Polymarket PTB response:',data);
+    if(data.ptb&&data.ptb>10000)return data.ptb;
+    if(data.startPrice&&parseFloat(data.startPrice)>10000)return parseFloat(data.startPrice);
     return null;
-  }catch(e){return null}
+  }catch(e){console.log('PTB proxy failed:',e);return null}
 }
 
 // Try fetching PTB on load and every new slot
@@ -450,16 +426,15 @@ let lastPtbFetchSlot=null;
 async function tryFetchPTB(){
   const nowSec=Math.floor(Date.now()/1000);
   const currentWindow=nowSec-(nowSec%300);
-  if(lastPtbFetchSlot===currentWindow)return; // Already fetched this slot
+  if(lastPtbFetchSlot===currentWindow)return;
   
   const ptb=await fetchPolymarketPTB();
   if(ptb&&markets[5]){
     markets[5].priceToBeat=ptb;
     lastPtbFetchSlot=currentWindow;
-    console.log('PTB from Polymarket: $'+ptb);
+    console.log('PTB set from Polymarket: $'+ptb);
   }
 }
-// Fetch PTB every 10 seconds until we get it for current slot
 setInterval(tryFetchPTB,10000);
 setTimeout(tryFetchPTB,2000);
 // USDT typically trades at ~$0.9995-1.0005 vs USD
