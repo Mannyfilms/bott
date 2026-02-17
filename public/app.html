@@ -270,7 +270,9 @@ connectBtcWs();
 async function fetchBTCPrice(){if(latestBtcPrice)return latestBtcPrice;try{const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');const d=await r.json();return parseFloat(d.price)}catch(e){return simPrice()}}
 let lsp=68360,lsv=1e6;
 function simPrice(){lsp+=(Math.random()-.5)*100+(Math.random()-.5)*20;return lsp}
-function simVol(){lsv+=(Math.random()-.5)*3e5;return Math.max(lsv,1e5)}
+let realVolume=0;
+async function fetchVolume(){try{const r=await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT');const d=await r.json();realVolume=parseFloat(d.quoteVolume);return parseFloat(d.volume)}catch(e){return 1e6}}
+function getVolume(){return realVolume||1e6}
 
 // ═══ INDICATORS ═══
 function sma(d,p){if(d.length<p)return null;return d.slice(-p).reduce((a,b)=>a+b,0)/p}
@@ -286,7 +288,36 @@ function vol(d,p=20){if(d.length<p)return null;const r=[];for(let i=1;i<Math.min
 function detectPat(prices){if(prices.length<20)return null;const r=prices.slice(-20),c=prices[prices.length-1],hi=r.filter((p,i)=>i>0&&i<r.length-1&&p>r[i-1]&&p>r[i+1]);if(hi.length>=2&&Math.abs(hi[hi.length-1]-hi[hi.length-2])/hi[0]<.01)return{pattern:'Double Top',signal:'BEARISH',strength:2};const lo=r.filter((p,i)=>i>0&&i<r.length-1&&p<r[i-1]&&p<r[i+1]);if(lo.length>=2&&Math.abs(lo[lo.length-1]-lo[lo.length-2])/lo[0]<.01)return{pattern:'Double Bottom',signal:'BULLISH',strength:2};const sl=(r[r.length-1]-r[0])/r.length;if(sl>0&&hi.length>=2&&Math.abs((hi[hi.length-1]-hi[0])/hi.length)<Math.abs(sl)*.3)return{pattern:'Ascending Triangle',signal:'BULLISH',strength:1.5};const s5=sma(r,5),s20=sma(r,20);if(s5&&s20&&s5>s20&&c>s5)return{pattern:'Strong Uptrend',signal:'BULLISH',strength:1.2};if(s5&&s20&&s5<s20&&c<s5)return{pattern:'Strong Downtrend',signal:'BEARISH',strength:1.2};return null}
 
 // ═══ EXTERNAL ═══
-function updateExt(){externalData.fearGreed=Math.max(0,Math.min(100,externalData.fearGreed+(Math.random()-.5)*10));externalData.sentiment=externalData.fearGreed>60?'GREEDY':externalData.fearGreed<40?'FEARFUL':'NEUTRAL';externalData.btcDominance=Math.max(40,Math.min(60,externalData.btcDominance+(Math.random()-.5)*2));externalData.fundingRate=(Math.random()-.5)*.2;const f=Math.random();externalData.exchangeFlow=f>.6?'INFLOW':f<.4?'OUTFLOW':'NEUTRAL';const w=Math.random();externalData.whaleActivity=w>.7?'HIGH':w>.3?'MODERATE':'LOW';document.getElementById('fearGreed').textContent=Math.round(externalData.fearGreed);document.getElementById('sentiment').textContent=externalData.sentiment;document.getElementById('btcDominance').textContent=externalData.btcDominance.toFixed(1)+'%';document.getElementById('fundingRate').textContent=externalData.fundingRate.toFixed(3)+'%';document.getElementById('exchangeFlow').textContent=externalData.exchangeFlow;document.getElementById('whaleActivity').textContent=externalData.whaleActivity}
+async function fetchFearGreed(){try{const r=await fetch('https://api.alternative.me/fng/');const d=await r.json();return{value:parseInt(d.data[0].value),label:d.data[0].value_classification}}catch(e){return null}}
+async function fetchGlobalData(){try{const r=await fetch('https://api.coingecko.com/api/v3/global');const d=await r.json();return{btcDominance:d.data.market_cap_percentage.btc}}catch(e){return null}}
+async function fetchFundingRate(){try{const r=await fetch('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1');const d=await r.json();return parseFloat(d[0].fundingRate)*100}catch(e){return null}}
+async function fetchNetFlow(){try{const r=await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT');const d=await r.json();const change=parseFloat(d.priceChangePercent);return change>0.5?'INFLOW':change<-0.5?'OUTFLOW':'NEUTRAL'}catch(e){return null}}
+let extUpdateCount=0;
+async function updateExt(){
+extUpdateCount++;
+// Fetch real data every 5th call (every ~25 sec) to avoid rate limits
+if(extUpdateCount%5===1||extUpdateCount===1){
+const fg=await fetchFearGreed();
+if(fg){externalData.fearGreed=fg.value;externalData.sentiment=fg.value>60?'GREEDY':fg.value<40?'FEARFUL':'NEUTRAL'}
+const gd=await fetchGlobalData();
+if(gd){externalData.btcDominance=gd.btcDominance}
+const fr=await fetchFundingRate();
+if(fr!==null){externalData.fundingRate=fr}
+const nf=await fetchNetFlow();
+if(nf){externalData.exchangeFlow=nf}
+// Whale activity from volume spike detection
+await fetchVolume();
+}
+document.getElementById('fearGreed').textContent=Math.round(externalData.fearGreed);
+document.getElementById('sentiment').textContent=externalData.sentiment;
+document.getElementById('btcDominance').textContent=externalData.btcDominance.toFixed(1)+'%';
+document.getElementById('fundingRate').textContent=externalData.fundingRate.toFixed(4)+'%';
+document.getElementById('exchangeFlow').textContent=externalData.exchangeFlow;
+// Whale activity based on volume vs average
+const vol24=realVolume;
+externalData.whaleActivity=vol24>40e9?'HIGH':vol24>25e9?'MODERATE':'LOW';
+document.getElementById('whaleActivity').textContent=externalData.whaleActivity;
+}
 
 // ═══ ML ═══
 async function mkLSTM(){const m=tf.sequential();m.add(tf.layers.lstm({units:50,returnSequences:true,inputShape:[10,15]}));m.add(tf.layers.dropout({rate:.2}));m.add(tf.layers.lstm({units:30,returnSequences:false}));m.add(tf.layers.dropout({rate:.2}));m.add(tf.layers.dense({units:1,activation:'sigmoid'}));m.compile({optimizer:tf.train.adam(.001),loss:'binaryCrossentropy',metrics:['accuracy']});return m}
@@ -347,7 +378,7 @@ function updateHistoryDisplay(){const el=document.getElementById('history');if(!
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-async function updatePrice(){const price=await fetchBTCPrice(),vl=simVol(),now=new Date;priceHistory.push({price,volume:vl,timestamp:now.getTime()});if(priceHistory.length>100)priceHistory.shift();if(now.getMinutes()===0&&(!priceAt1HourMark||(now.getTime()-priceAt1HourMark.timestamp)>34e5)){priceAt1HourMark={price,timestamp:now.getTime(),time:new Date(now)};if(nextPredictionTime&&now>=nextPredictionTime&&currentPrediction)checkPrediction(price);priceToBeat=price;nextPredictionTime=getNext1HourMark()}await updateDisplay(price,vl)}
+async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),now=new Date;priceHistory.push({price,volume:vl,timestamp:now.getTime()});if(priceHistory.length>100)priceHistory.shift();if(now.getMinutes()===0&&(!priceAt1HourMark||(now.getTime()-priceAt1HourMark.timestamp)>34e5)){priceAt1HourMark={price,timestamp:now.getTime(),time:new Date(now)};if(nextPredictionTime&&now>=nextPredictionTime&&currentPrediction)checkPrediction(price);priceToBeat=price;nextPredictionTime=getNext1HourMark()}await updateDisplay(price,vl)}
 function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;nextPredictionTime=getNext1HourMark();updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};priceToBeat=null;priceAt1HourMark=null;currentPrediction=null;if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete'}
