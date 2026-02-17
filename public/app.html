@@ -304,9 +304,9 @@ function getNextMark(tf){
 
 function isAtMark(now,tf){
   tf=tf||selectedTimeframe;
-  const mins=now.getMinutes();
-  if(tf===60)return mins===0;
-  return mins%tf===0;
+  const mins=now.getMinutes(),secs=now.getSeconds();
+  if(tf===60)return mins===0&&secs<10;
+  return mins%tf===0&&secs<10;
 }
 
 // ═══ SAVE/LOAD ═══
@@ -435,15 +435,27 @@ async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),no
 // Update ALL markets independently
 [5,15,60].forEach(tf=>{
   const m=markets[tf];
+  // Check if we're at an interval mark (within first 10 seconds)
   if(isAtMark(now,tf)&&(!m.lastMarkTime||(now.getTime()-m.lastMarkTime)>(tf*60000-30000))){
     m.lastMarkTime=now.getTime();
     if(m.nextPredictionTime&&now>=m.nextPredictionTime&&m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
     m.priceToBeat=price;
     m.nextPredictionTime=getNextMark(tf);
   }
+  // If no PTB set yet, set it now (first run or missed the mark)
+  if(!m.priceToBeat){
+    m.priceToBeat=price;
+    m.nextPredictionTime=getNextMark(tf);
+    m.lastMarkTime=now.getTime();
+  }
 });
 await updateDisplay(price,vl)}
-function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;[5,15,60].forEach(tf=>{markets[tf].nextPredictionTime=getNextMark(tf)});updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
+function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;
+// Initialize all markets with current price immediately
+[5,15,60].forEach(tf=>{
+  markets[tf].nextPredictionTime=getNextMark(tf);
+});
+updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,lastMarkTime:null,currentPrediction:null,nextPredictionTime:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
 window.addEventListener('DOMContentLoaded',()=>{if(loadProgress())document.getElementById('status').innerHTML='<strong>Progress restored</strong> &mdash; Click Start'});
