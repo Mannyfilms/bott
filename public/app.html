@@ -716,6 +716,31 @@ const jp=prices.map(p=>p.price),cur=jp[jp.length-1];
 const candles=prices.filter(p=>p.open).slice(-50);
 let sigs=[],sc=0,tw=0;
 
+// ★★★ STRATEGY 0: PRICE vs PTB REALITY CHECK (heaviest weight) ★★★
+// This is the most important signal — where is price RIGHT NOW relative to PTB?
+// If price is $200 below PTB with 2 minutes left, it's almost certainly NO.
+{
+  const diff=cur-ptb;
+  const pctDiff=(diff/ptb)*100;
+  const slotEnd=getSlotEnd(selectedTimeframe);
+  const timeLeft=(slotEnd-new Date())/1000; // seconds remaining
+  const timeTotal=selectedTimeframe*60; // total seconds in slot
+  const timePct=Math.max(0,timeLeft/timeTotal); // 1.0 = just started, 0 = about to end
+  
+  // The further price is from PTB and the less time left, the stronger this signal
+  // Weight increases as time runs out (price has less time to recover)
+  const urgency=1+(1-timePct)*4; // 1x at start, 5x at end
+  const w=5*urgency; // Base weight 5, up to 25 near end
+  
+  if(Math.abs(pctDiff)>0.01){ // More than 0.01% away
+    sc+=diff>0?w:-w;
+    const label=diff>0?'ABOVE PTB (+$'+diff.toFixed(0)+')':'BELOW PTB (-$'+Math.abs(diff).toFixed(0)+')';
+    const timeStr=timeLeft>60?Math.floor(timeLeft/60)+'m left':Math.floor(timeLeft)+'s left';
+    sigs.push({name:'★ Price vs PTB',signal:label+' · '+timeStr,strength:w});
+    tw+=w;
+  }
+}
+
 // ★ REGIME DETECTION — adapt strategy weights
 const regime=detectRegime(jp);
 const isTrending=regime.startsWith('TRENDING');
