@@ -6,7 +6,7 @@ const GUILD_ID = process.env.DISCORD_GUILD_ID;
 const REQUIRED_ROLE_ID = '1472956989461237811';
 
 if (!TOKEN) {
-  console.error('DISCORD_TOKEN not set! Bot will not start.');
+  console.error('DISCORD_TOKEN not set!');
   return;
 }
 
@@ -16,10 +16,10 @@ const client = new Client({
 
 async function registerCommands() {
   const commands = [
-    new SlashCommandBuilder().setName('getaccess').setDescription('Get your personal access code for the BTC Prediction dashboard'),
+    new SlashCommandBuilder().setName('getaccess').setDescription('Get your personal access code'),
     new SlashCommandBuilder().setName('mycode').setDescription('View your existing access code'),
-    new SlashCommandBuilder().setName('revoke').setDescription('Revoke access for a user (admin only)')
-      .addUserOption(opt => opt.setName('user').setDescription('The user to revoke').setRequired(true))
+    new SlashCommandBuilder().setName('revoke').setDescription('Revoke access (admin only)')
+      .addUserOption(opt => opt.setName('user').setDescription('User to revoke').setRequired(true))
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -46,59 +46,63 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-  const { commandName, user, member } = interaction;
 
-  if (commandName === 'getaccess') {
-    if (!hasRole(member)) {
-      return interaction.reply({
-        content: 'You need the **Subscriber** role to access this. Subscribe to get access!',
-        ephemeral: true
-      });
-    }
-    try {
+  try {
+    const { commandName, user, member } = interaction;
+
+    if (commandName === 'getaccess') {
+      if (!hasRole(member)) {
+        await interaction.reply({ content: 'You need the **Subscriber** role to access this.', ephemeral: true });
+        return;
+      }
       const { code, isNew } = getOrCreateUser(user.id, user.username);
       await interaction.reply({
         content: isNew
-          ? '**Your access code:**\n\n`' + code + '`\n\nEnter this on the website to log in. This code is tied to your Discord account. Use `/mycode` anytime to see it again.'
-          : '**Your access code:**\n\n`' + code + '`\n\nSame code as before. Enter it on the website to log in.',
+          ? '**Your access code:**\n\n`' + code + '`\n\nEnter this on the website to log in. Use `/mycode` to see it again.'
+          : '**Your access code:**\n\n`' + code + '`\n\nSame code as before.',
         ephemeral: true
       });
-    } catch (error) {
-      await interaction.reply({ content: 'Something went wrong. Try again.', ephemeral: true });
+      return;
     }
-  }
 
-  if (commandName === 'mycode') {
-    if (!hasRole(member)) {
-      return interaction.reply({
-        content: 'You need the **Subscriber** role to use this.',
-        ephemeral: true
-      });
-    }
-    try {
+    if (commandName === 'mycode') {
+      if (!hasRole(member)) {
+        await interaction.reply({ content: 'You need the **Subscriber** role.', ephemeral: true });
+        return;
+      }
       const { code } = getOrCreateUser(user.id, user.username);
       await interaction.reply({ content: 'Your code: `' + code + '`', ephemeral: true });
-    } catch (error) {
-      await interaction.reply({ content: 'Something went wrong.', ephemeral: true });
+      return;
     }
-  }
 
-  if (commandName === 'revoke') {
-    if (!member.permissions.has('Administrator')) {
-      return interaction.reply({ content: 'You need Administrator permission.', ephemeral: true });
+    if (commandName === 'revoke') {
+      if (!member.permissions.has('Administrator')) {
+        await interaction.reply({ content: 'You need Administrator permission.', ephemeral: true });
+        return;
+      }
+      const targetUser = interaction.options.getUser('user');
+      const revoked = revokeUser(targetUser.id);
+      await interaction.reply({
+        content: revoked ? 'Access revoked for **' + targetUser.username + '**.' : 'No active access found.',
+        ephemeral: true
+      });
+      return;
     }
-    const targetUser = interaction.options.getUser('user');
-    const revoked = revokeUser(targetUser.id);
-    await interaction.reply({
-      content: revoked ? 'Access revoked for **' + targetUser.username + '**.' : 'No active access found for that user.',
-      ephemeral: true
-    });
+  } catch (error) {
+    console.error('Command error:', error);
+    if (!interaction.replied) {
+      await interaction.reply({ content: 'Something went wrong. Try again.', ephemeral: true }).catch(() => {});
+    }
   }
 });
 
 client.on('guildMemberRemove', (member) => {
   revokeUser(member.id);
   console.log(member.user.username + ' left - access revoked');
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled rejection:', error);
 });
 
 client.login(TOKEN);
