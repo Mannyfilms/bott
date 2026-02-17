@@ -107,7 +107,7 @@
 <div class="shell">
     <nav class="nav">
         <div class="nav-mark">&#8383;</div>
-        <div class="nav-text"><h1>BTC Prediction</h1><span>Binance Live (Polymarket Source)</span></div>
+        <div class="nav-text"><h1>BTC Prediction</h1><span>5-Minute Forecasts &middot; Binance Live (Polymarket Source)</span></div>
         <div class="nav-right">
             <span class="nav-user" id="userGreeting"></span>
             <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
@@ -117,12 +117,6 @@
             <button class="btn btn-g" onclick="logout()">Log out</button>
         </div>
     </nav>
-
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-        <button class="btn tf-btn tf-active" id="tf5" onclick="setTimeframe(5)">5 Min</button>
-        <button class="btn tf-btn" id="tf15" onclick="setTimeframe(15)">15 Min</button>
-        <button class="btn tf-btn" id="tf60" onclick="setTimeframe(60)">1 Hour</button>
-    </div>
 
     <div class="disc">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -134,7 +128,7 @@
         <div class="status" id="status">Ready &mdash; Click Start</div>
         <div class="mlbar" id="mlStatus">Ensemble: Initializing &middot; LSTM: Not trained &middot; Pattern Recognition: Active</div>
         <div class="g2" style="margin-top:16px">
-            <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbLabel">Set at interval mark</div></div>
+            <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbLabel">Set at 5-minute mark</div></div>
             <div style="text-align:center"><div class="plbl">Current Price</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
         </div>
         <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
@@ -466,7 +460,7 @@ const price=latestBtcPrice||0;const now=new Date();
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,currentSlot:null,currentPrediction:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
-window.addEventListener('DOMContentLoaded',()=>{loadProgress();setTimeout(()=>startPredictions(),5000)});
+window.addEventListener('DOMContentLoaded',()=>{loadProgress();startPredictions()});
 </script>
 </body>
 </html>
