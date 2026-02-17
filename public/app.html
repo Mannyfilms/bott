@@ -28,6 +28,9 @@
         .btn-r{background:var(--dns);color:var(--dn);border:1px solid rgba(255,71,87,.12)}
         .btn-r:hover{background:var(--dnm)}
         .btn:disabled{opacity:.35;cursor:not-allowed;transform:none!important}
+        .tf-btn{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd);padding:10px 24px;font-size:.85em;font-weight:600;letter-spacing:.02em}
+        .tf-btn:hover{background:var(--sf3);color:var(--tx)}
+        .tf-active{background:linear-gradient(140deg,var(--btc),#e07c0e)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 2px 12px rgba(247,147,26,.2)}
 
         .disc{display:flex;align-items:center;gap:8px;padding:9px 15px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:20px;font-size:.76em;color:var(--tx3);line-height:1.4}
         .disc svg{flex-shrink:0;opacity:.45}
@@ -104,7 +107,7 @@
 <div class="shell">
     <nav class="nav">
         <div class="nav-mark">&#8383;</div>
-        <div class="nav-text"><h1>BTC Prediction</h1><span>1-Hour Forecasts &middot; Binance Live (Polymarket Source)</span></div>
+        <div class="nav-text"><h1>BTC Prediction</h1><span>Binance Live (Polymarket Source)</span></div>
         <div class="nav-right">
             <span class="nav-user" id="userGreeting"></span>
             <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
@@ -114,6 +117,12 @@
             <button class="btn btn-g" onclick="logout()">Log out</button>
         </div>
     </nav>
+
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+        <button class="btn tf-btn tf-active" id="tf5" onclick="setTimeframe(5)">5 Min</button>
+        <button class="btn tf-btn" id="tf15" onclick="setTimeframe(15)">15 Min</button>
+        <button class="btn tf-btn" id="tf60" onclick="setTimeframe(60)">1 Hour</button>
+    </div>
 
     <div class="disc">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -125,7 +134,7 @@
         <div class="status" id="status">Ready &mdash; Click Start</div>
         <div class="mlbar" id="mlStatus">Ensemble: Initializing &middot; LSTM: Not trained &middot; Pattern Recognition: Active</div>
         <div class="g2" style="margin-top:16px">
-            <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub">Set at hour mark</div></div>
+            <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbLabel">Set at interval mark</div></div>
             <div style="text-align:center"><div class="plbl">Current Price</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
         </div>
         <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
@@ -248,6 +257,7 @@ setInterval(async () => {
 }, 10000);
 
 // ═══ STATE ═══
+let selectedTimeframe=5; // 5, 15, or 60 minutes
 let priceHistory=[],predictionHistory=[],currentPrediction=null,updateInterval=null,checkInterval=null;
 let isRunning=false,nextPredictionTime=null,priceToBeat=null,priceAt1HourMark=null;
 let lstmModel=null,technicalModel=null,hybridModel=null,modelsTraining=false,trainingData=[];
@@ -256,13 +266,38 @@ let signalPerformance={};
 let stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};
 let externalData={fearGreed:50,sentiment:'NEUTRAL',btcDominance:50,fundingRate:0,exchangeFlow:'NEUTRAL',whaleActivity:'LOW'};
 
+function setTimeframe(tf){
+  selectedTimeframe=tf;
+  document.querySelectorAll('.tf-btn').forEach(b=>b.classList.remove('tf-active'));
+  document.getElementById('tf'+tf).classList.add('tf-active');
+  const labels={5:'5-minute',15:'15-minute',60:'1-hour'};
+  document.getElementById('ptbLabel').textContent='Set at '+labels[tf]+' mark';
+  // Reset prediction for new timeframe
+  priceToBeat=null;priceAt1HourMark=null;currentPrediction=null;
+  if(isRunning){nextPredictionTime=getNextMark();document.getElementById('status').textContent='Switched to '+labels[tf]+' — waiting for next mark'}
+}
+
+function getNextMark(){
+  const n=new Date(),mins=n.getMinutes(),tf=selectedTimeframe;
+  if(tf===60){n.setHours(n.getHours()+1);n.setMinutes(0,0,0);return n}
+  const nextMin=Math.ceil((mins+1)/tf)*tf;
+  if(nextMin>=60){n.setHours(n.getHours()+1);n.setMinutes(nextMin-60,0,0)}
+  else{n.setMinutes(nextMin,0,0)}
+  return n;
+}
+
+function isAtMark(now){
+  const mins=now.getMinutes(),tf=selectedTimeframe;
+  if(tf===60)return mins===0;
+  return mins%tf===0;
+}
+
 // ═══ SAVE/LOAD ═══
 function saveProgress(){try{localStorage.setItem('btcPred',JSON.stringify({priceHistory:priceHistory.slice(-100),predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,priceToBeat,wasRunning:isRunning,lastSaved:Date.now()}))}catch(e){}}
 function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24)return false;priceHistory=d.priceHistory||[];predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;priceToBeat=d.priceToBeat||null;updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; All models online &middot; Pattern Recognition: Active';if(d.wasRunning)setTimeout(()=>startPredictions(),1e3);return true}catch(e){return false}}
 setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgress);
 
 // ═══ UTILITY ═══
-function getNext1HourMark(){const n=new Date;n.setHours(n.getHours()+1);n.setMinutes(0,0,0);return n}
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
 let btcWs=null,latestBtcPrice=null;
 function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
@@ -378,8 +413,8 @@ function updateHistoryDisplay(){const el=document.getElementById('history');if(!
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),now=new Date;priceHistory.push({price,volume:vl,timestamp:now.getTime()});if(priceHistory.length>100)priceHistory.shift();if(now.getMinutes()===0&&(!priceAt1HourMark||(now.getTime()-priceAt1HourMark.timestamp)>34e5)){priceAt1HourMark={price,timestamp:now.getTime(),time:new Date(now)};if(nextPredictionTime&&now>=nextPredictionTime&&currentPrediction)checkPrediction(price);priceToBeat=price;nextPredictionTime=getNext1HourMark()}await updateDisplay(price,vl)}
-function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;nextPredictionTime=getNext1HourMark();updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
+async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),now=new Date;priceHistory.push({price,volume:vl,timestamp:now.getTime()});if(priceHistory.length>100)priceHistory.shift();if(isAtMark(now)&&(!priceAt1HourMark||(now.getTime()-priceAt1HourMark.timestamp)>(selectedTimeframe*60000-30000))){priceAt1HourMark={price,timestamp:now.getTime(),time:new Date(now)};if(nextPredictionTime&&now>=nextPredictionTime&&currentPrediction)checkPrediction(price);priceToBeat=price;nextPredictionTime=getNextMark()}await updateDisplay(price,vl)}
+function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;nextPredictionTime=getNextMark();updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};priceToBeat=null;priceAt1HourMark=null;currentPrediction=null;if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete'}
 window.addEventListener('DOMContentLoaded',()=>{if(loadProgress())document.getElementById('status').innerHTML='<strong>Progress restored</strong> &mdash; Click Start'});
