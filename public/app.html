@@ -104,7 +104,7 @@
 <div class="shell">
     <nav class="nav">
         <div class="nav-mark">&#8383;</div>
-        <div class="nav-text"><h1>BTC Prediction</h1><span>1-Hour Forecasts &middot; Binance Live</span></div>
+        <div class="nav-text"><h1>BTC Prediction</h1><span>1-Hour Forecasts &middot; Crypto.com Live</span></div>
         <div class="nav-right">
             <span class="nav-user" id="userGreeting"></span>
             <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
@@ -206,7 +206,7 @@
 
             <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
                 <div style="color:var(--up);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9889; Real-Time Data Sources</div>
-                <p><strong style="color:var(--tx)">Binance API</strong> &mdash; Live BTC/USDT spot price updated every 15 seconds directly from Binance exchange (same price source used by Polymarket for hourly resolution).</p>
+                <p><strong style="color:var(--tx)">Crypto.com API</strong> &mdash; Live BTC/USDT spot price updated every 15 seconds directly from Crypto.com exchange with Binance fallback for maximum reliability.</p>
                 <p style="margin-top:8px"><strong style="color:var(--tx)">Technical Indicators</strong> &mdash; SMA (5, 10, 20), EMA (12), RSI (14), Stochastic Oscillator, Bollinger Bands (20, 2&sigma;), MACD, ATR (14), volume trends, and momentum calculations.</p>
                 <p style="margin-top:8px"><strong style="color:var(--tx)">Market Sentiment</strong> &mdash; Fear &amp; Greed Index, BTC dominance, funding rates, exchange inflow/outflow, and whale activity monitoring.</p>
             </div>
@@ -264,7 +264,7 @@ setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgres
 // ═══ UTILITY ═══
 function getNext1HourMark(){const n=new Date;n.setHours(n.getHours()+1);n.setMinutes(0,0,0);return n}
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
-async function fetchBTCPrice(){try{const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');const d=await r.json();return parseFloat(d.price)}catch(e){try{const r2=await fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot');return parseFloat((await r2.json()).data.amount)}catch(e2){return simPrice()}}}
+async function fetchBTCPrice(){try{const r=await fetch('https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=BTC_USDT');const d=await r.json();if(d.result&&d.result.data&&d.result.data.length>0)return parseFloat(d.result.data[0].a);throw new Error('no data')}catch(e){try{const r2=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');const d2=await r2.json();return parseFloat(d2.price)}catch(e2){return simPrice()}}}
 let lsp=68360,lsv=1e6;
 function simPrice(){lsp+=(Math.random()-.5)*100+(Math.random()-.5)*20;return lsp}
 function simVol(){lsv+=(Math.random()-.5)*3e5;return Math.max(lsv,1e5)}
