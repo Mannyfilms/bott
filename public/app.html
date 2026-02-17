@@ -366,18 +366,17 @@ setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgres
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
+let lastChainlinkSlot=null; // Track slot changes from Chainlink stream
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
 function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
     polyWs.onopen=function(){
-      // Subscribe to Chainlink BTC/USD (what Polymarket uses for settlement)
       polyWs.send(JSON.stringify({
         action:'subscribe',
         subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
       }));
-      // Also subscribe to Binance BTC/USDT for backup
       polyWs.send(JSON.stringify({
         action:'subscribe',
         subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
@@ -389,13 +388,26 @@ function connectPolyWs(){
         const d=JSON.parse(e.data);
         if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
           latestChainlinkPrice=d.payload.value;
-          latestBtcPrice=d.payload.value; // Use Chainlink as primary
+          latestBtcPrice=d.payload.value;
+          
+          // ★ CAPTURE PTB AT EXACT SLOT BOUNDARY from Chainlink stream
+          // This fires much more frequently than our 5-sec poll, so we catch the
+          // slot change closer to the actual second it happens
+          const now=new Date();
+          const currentSlot5=getSlot(5,now);
+          if(lastChainlinkSlot!==null&&lastChainlinkSlot!==currentSlot5){
+            // Slot just changed — this Chainlink price IS the PTB
+            // Set it for the 5-min market immediately
+            if(markets[5])markets[5].priceToBeat=d.payload.value;
+            console.log('PTB set from Chainlink at slot boundary: $'+d.payload.value);
+          }
+          lastChainlinkSlot=currentSlot5;
+          
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
-          if(!latestChainlinkPrice)latestBtcPrice=d.payload.value; // Fallback to Binance
+          if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
         }
       }catch(ex){}
     };
-    // Send pings every 5 seconds to keep alive
     let pingInterval=setInterval(()=>{
       if(polyWs.readyState===1)polyWs.send('PING');
       else{clearInterval(pingInterval)}
@@ -1154,10 +1166,10 @@ if(!predictionLock.locked){
     predictionLock.direction=priceVsPtb>0;
     predictionLock.lockPrice=price;
     displayWillBeat=priceVsPtb>0;
-    lockStatus=' ⚠️ OVERRIDE ($'+(priceVsPtb>0?'+':'')+priceVsPtb.toFixed(0)+' vs threshold $'+overrideThreshold.toFixed(0)+')';
+    lockStatus=' ⚠️ OVERRIDE';
   }else{
     displayWillBeat=predictionLock.direction;
-    lockStatus=' 🔒 LOCKED (threshold: $'+overrideThreshold.toFixed(0)+')';
+    lockStatus=' 🔒 LOCKED';
   }
 }
 
@@ -1281,7 +1293,8 @@ if(priceHistory.length>500)priceHistory.shift();
     if(tf===selectedTimeframe)resetPredictionLock(); // New slot = unlock prediction
   }
   if(m.currentSlot!==currentSlot){
-    m.priceToBeat=price;
+    // Only set PTB if Chainlink WebSocket hasn't already captured it
+    if(!m.priceToBeat||m.currentSlot===null)m.priceToBeat=price;
     m.currentSlot=currentSlot;
   }
 });
