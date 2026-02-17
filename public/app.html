@@ -317,8 +317,10 @@ function setTimeframe(tf){
 }
 
 // ═══ SAVE/LOAD ═══
-function saveProgress(){try{localStorage.setItem('btcPred',JSON.stringify({priceHistory:priceHistory.slice(-100),predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,markets,selectedTimeframe,wasRunning:isRunning,lastSaved:Date.now()}))}catch(e){}}
-function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24)return false;priceHistory=d.priceHistory||[];predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;if(d.markets){[5,15,60].forEach(tf=>{if(d.markets[tf]){markets[tf].priceToBeat=d.markets[tf].priceToBeat||null;markets[tf].lastMarkTime=d.markets[tf].lastMarkTime||null}})}if(d.selectedTimeframe)setTimeframe(d.selectedTimeframe);updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; All models online &middot; Pattern Recognition: Active';if(d.wasRunning)setTimeout(()=>startPredictions(),1e3);return true}catch(e){return false}}
+function saveProgress(){try{localStorage.setItem('btcPred',JSON.stringify({predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,lastSaved:Date.now()}))}catch(e){}}
+function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24)return false;priceHistory=d.priceHistory||[];predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;
+// Don't restore priceToBeat — always get fresh from market. Only restore stats/history.
+updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; All models online &middot; Pattern Recognition: Active';return true}catch(e){return false}}
 setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgress);
 
 // ═══ UTILITY ═══
