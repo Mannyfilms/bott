@@ -1129,25 +1129,35 @@ if(!predictionLock.locked){
     lockStatus=' ⏳ Locking in '+secsToLock+'s';
   }
 }else{
-  // LOCKED — use locked direction unless dramatic override
-  const priceMoveFromLock=Math.abs(price-predictionLock.lockPrice);
+  // LOCKED — use locked direction unless price clearly contradicts
   const priceVsPtb=price-ptb;
   const lockedSaysYes=predictionLock.direction;
   
-  // Override conditions: price moved $100+ AND now clearly on the other side of PTB
-  const shouldOverride=priceMoveFromLock>predictionLock.overrideThreshold&&
-    ((lockedSaysYes&&priceVsPtb<-50)||(!lockedSaysYes&&priceVsPtb>50));
+  // ★ ADAPTIVE OVERRIDE THRESHOLD using ATR + time decay
+  // ATR tells us what's a "normal" move vs a significant one
+  const recentPrices=jp.slice(-60); // Last ~5 min of 5-sec ticks
+  const currentAtr=atr(recentPrices)||50; // Fallback $50 if not enough data
   
-  if(shouldOverride){
-    // OVERRIDE — dramatic move in opposite direction
-    predictionLock.direction=pred.willBeat;
+  // Time factor: threshold shrinks as slot ends
+  // At 4 min left → 1.0x ATR needed to override
+  // At 2 min left → 0.5x ATR
+  // At 30 sec left → 0.15x ATR (even small wrong-side = override)
+  const timeLeftSec=(slotEnd-new Date())/1000;
+  const timeTotal=selectedTimeframe*60;
+  const timeFactor=Math.max(0.15,Math.min(1.0,timeLeftSec/timeTotal*1.5));
+  const overrideThreshold=currentAtr*timeFactor;
+  
+  // Override if price is on the WRONG side of PTB by more than the adaptive threshold
+  const wrongSide=(lockedSaysYes&&priceVsPtb<-overrideThreshold)||(!lockedSaysYes&&priceVsPtb>overrideThreshold);
+  
+  if(wrongSide){
+    predictionLock.direction=priceVsPtb>0;
     predictionLock.lockPrice=price;
-    displayWillBeat=pred.willBeat;
-    lockStatus=' ⚠️ OVERRIDDEN (moved $'+priceMoveFromLock.toFixed(0)+')';
+    displayWillBeat=priceVsPtb>0;
+    lockStatus=' ⚠️ OVERRIDE ($'+(priceVsPtb>0?'+':'')+priceVsPtb.toFixed(0)+' vs threshold $'+overrideThreshold.toFixed(0)+')';
   }else{
-    // Stay with locked prediction
     displayWillBeat=predictionLock.direction;
-    lockStatus=' 🔒 LOCKED';
+    lockStatus=' 🔒 LOCKED (threshold: $'+overrideThreshold.toFixed(0)+')';
   }
 }
 
