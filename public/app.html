@@ -303,9 +303,17 @@ function setTimeframe(tf){
   const labels={5:'5-minute',15:'15-minute',60:'1-hour'};
   document.getElementById('ptbLabel').textContent='Set at '+labels[tf]+' mark';
   const m=getActiveMarket();
-  if(m.priceToBeat){document.getElementById('priceToBeat').textContent='$'+m.priceToBeat.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-  else{document.getElementById('priceToBeat').textContent='--'}
-  document.getElementById('vsComparison').textContent='--';
+  if(m.priceToBeat){
+    document.getElementById('priceToBeat').textContent='$'+m.priceToBeat.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    // Immediately calculate vs comparison with latest price
+    if(latestBtcPrice){
+      const d=latestBtcPrice-m.priceToBeat,p=(d/m.priceToBeat*100).toFixed(3);
+      document.getElementById('vsComparison').innerHTML=d>0?'<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':'<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>';
+    }
+  } else{
+    document.getElementById('priceToBeat').textContent='--';
+    document.getElementById('vsComparison').textContent='--';
+  }
   if(isRunning)updateCountdown();
 }
 
