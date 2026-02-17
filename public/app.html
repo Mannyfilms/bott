@@ -268,10 +268,31 @@ let externalData={fearGreed:50,sentiment:'NEUTRAL',btcDominance:50,fundingRate:0
 
 // Per-timeframe market state
 let markets={
-  5:{priceToBeat:null,lastMarkTime:null,currentPrediction:null,nextPredictionTime:null},
-  15:{priceToBeat:null,lastMarkTime:null,currentPrediction:null,nextPredictionTime:null},
-  60:{priceToBeat:null,lastMarkTime:null,currentPrediction:null,nextPredictionTime:null}
+  5:{priceToBeat:null,currentSlot:null,currentPrediction:null},
+  15:{priceToBeat:null,currentSlot:null,currentPrediction:null},
+  60:{priceToBeat:null,currentSlot:null,currentPrediction:null}
 };
+
+// Get the current time slot for a timeframe
+// e.g. for 5min at 14:37 → slot is "14:35", at 14:40 → slot is "14:40"
+function getSlot(tf,date){
+  const d=date||new Date();
+  const totalMins=d.getHours()*60+d.getMinutes();
+  const slotMins=Math.floor(totalMins/tf)*tf;
+  return slotMins; // unique number per slot
+}
+
+// Get the end time of the current slot (= when next slot starts)
+function getSlotEnd(tf,date){
+  const d=date||new Date();
+  const totalMins=d.getHours()*60+d.getMinutes();
+  const slotMins=Math.floor(totalMins/tf)*tf;
+  const nextSlotMins=slotMins+tf;
+  const end=new Date(d);
+  end.setHours(Math.floor(nextSlotMins/60),nextSlotMins%60,0,0);
+  if(nextSlotMins>=1440){end.setDate(end.getDate()+1);end.setHours(0,0,0,0)}
+  return end;
+}
 
 function getActiveMarket(){return markets[selectedTimeframe]}
 
@@ -281,32 +302,11 @@ function setTimeframe(tf){
   document.getElementById('tf'+tf).classList.add('tf-active');
   const labels={5:'5-minute',15:'15-minute',60:'1-hour'};
   document.getElementById('ptbLabel').textContent='Set at '+labels[tf]+' mark';
-  // Update display with this market's data
   const m=getActiveMarket();
   if(m.priceToBeat){document.getElementById('priceToBeat').textContent='$'+m.priceToBeat.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
   else{document.getElementById('priceToBeat').textContent='--'}
-  if(isRunning){
-    if(!m.nextPredictionTime)m.nextPredictionTime=getNextMark(tf);
-    if(m.priceToBeat){document.getElementById('status').textContent=labels[tf]+' market active'}
-    else{document.getElementById('status').textContent='Switched to '+labels[tf]+' — waiting for next mark'}
-  }
-}
-
-function getNextMark(tf){
-  tf=tf||selectedTimeframe;
-  const n=new Date(),mins=n.getMinutes();
-  if(tf===60){n.setHours(n.getHours()+1);n.setMinutes(0,0,0);return n}
-  const nextMin=Math.ceil((mins+1)/tf)*tf;
-  if(nextMin>=60){n.setHours(n.getHours()+1);n.setMinutes(nextMin-60,0,0)}
-  else{n.setMinutes(nextMin,0,0)}
-  return n;
-}
-
-function isAtMark(now,tf){
-  tf=tf||selectedTimeframe;
-  const mins=now.getMinutes(),secs=now.getSeconds();
-  if(tf===60)return mins===0&&secs<10;
-  return mins%tf===0&&secs<10;
+  document.getElementById('vsComparison').textContent='--';
+  if(isRunning)updateCountdown();
 }
 
 // ═══ SAVE/LOAD ═══
@@ -413,16 +413,16 @@ const s5=sma(jp,5),s10v=sma(jp,10),s20=sma(jp,20),e12=ema(jp,12),rs=rsi(jp),st2=
 document.getElementById('sma5').textContent=s5?'$'+s5.toFixed(2):'--';document.getElementById('sma10').textContent=s10v?'$'+s10v.toFixed(2):'--';document.getElementById('sma20').textContent=s20?'$'+s20.toFixed(2):'--';document.getElementById('ema12').textContent=e12?'$'+e12.toFixed(2):'--';document.getElementById('rsi').textContent=rs?rs.toFixed(1):'--';document.getElementById('stochastic').textContent=st2?st2.toFixed(1):'--';document.getElementById('bbUpper').textContent=b?'$'+b.upper.toFixed(2):'--';document.getElementById('bbLower').textContent=b?'$'+b.lower.toFixed(2):'--';document.getElementById('macd').textContent=mc2?mc2.signal:'--';document.getElementById('atr').textContent=at?'$'+at.toFixed(2):'--';
 if(vols.length>=20){const rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10,vc=((rv-ov)/ov*100).toFixed(1);document.getElementById('volumeTrend').textContent=(vc>0?'+ ':'- ')+vc+'%';document.getElementById('volumeTrend').style.color=vc>0?'var(--up)':'var(--dn)'}
 updateExt();
-const m=getActiveMarket(),ptb=m.priceToBeat,npt=m.nextPredictionTime;
-if(priceHistory.length>=20&&ptb&&npt){const pred=await makePred(priceHistory,vols,ptb);m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:npt,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
+const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe);
+if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb);m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
 const pb=document.getElementById('predictionDisplay');pb.className=pred.willBeat?'pred pred-up':'pred pred-dn';
 document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(pred.willBeat?'&#8593; YES':'&#8595; NO')+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(pred.willBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
-document.getElementById('predictionConfidence').textContent='Confidence: '+pred.confidence+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(npt);document.getElementById('nextCheckTime').textContent=fmt(npt);document.getElementById('confidenceMeter').style.width=pred.confidence+'%';document.getElementById('confPercent').textContent=pred.confidence+'%';const cf=parseFloat(pred.confidence);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
+document.getElementById('predictionConfidence').textContent='Confidence: '+pred.confidence+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=pred.confidence+'%';document.getElementById('confPercent').textContent=pred.confidence+'%';const cf=parseFloat(pred.confidence);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
 ['model1','model2','model3'].forEach((id,i)=>{const k=['lstm','technical','hybrid'][i],v=pred.modelPredictions[k];document.getElementById(id+'Pred').textContent=v>.5?'UP ↑':'DOWN ↓';document.getElementById(id+'Pred').style.color=v>.5?'var(--up)':'var(--dn)';document.getElementById(id+'Conf').textContent=(v*100).toFixed(1)+'%'});
 if(pred.pattern){document.getElementById('patternSection').style.display='block';document.getElementById('patternName').textContent=pred.pattern.pattern+' — '+pred.pattern.signal}else document.getElementById('patternSection').style.display='none';
 displaySignals(pred.signals);updateCountdown()}}
 function displaySignals(sigs){const el=document.getElementById('signalList');if(!sigs||!sigs.length){el.innerHTML='<span style="color:var(--tx3)">Waiting&hellip;</span>';return}el.innerHTML=sigs.map(s=>{let c='';if(s.signal.includes('BULLISH'))c='sig-u';if(s.signal.includes('BEARISH'))c='sig-d';return'<div class="sig '+c+'"><span><strong>'+s.name+'</strong></span><span style="color:var(--tx2)">'+s.signal+(s.probability?' ('+s.probability+')':'')+'</span><span style="color:var(--tx3)">'+s.strength.toFixed(2)+'</span></div>'}).join('')}
-function updateCountdown(){const m=getActiveMarket();if(!m.nextPredictionTime)return;const tl=m.nextPredictionTime-new Date();if(tl<=0){document.getElementById('status').textContent='Checking prediction...';return}const labels={5:'5m',15:'15m',60:'1h'};document.getElementById('status').textContent=labels[selectedTimeframe]+' Next: '+fmt(m.nextPredictionTime)+' ('+Math.floor(tl/6e4)+'m '+Math.floor(tl%6e4/1e3)+'s)'}
+function updateCountdown(){const end=getSlotEnd(selectedTimeframe);const tl=end-new Date();if(tl<=0){document.getElementById('status').textContent='Checking prediction...';return}const labels={5:'5m',15:'15m',60:'1h'};document.getElementById('status').textContent=labels[selectedTimeframe]+' Next: '+fmt(end)+' ('+Math.floor(tl/6e4)+'m '+Math.floor(tl%6e4/1e3)+'s)'}
 
 // ═══ CHECK ═══
 function checkPrediction(np){const m=getActiveMarket();const cp=m.currentPrediction;if(!cp||!cp.priceToBeat)return;const pw=cp.willBeat,ab=np>cp.priceToBeat,ok=pw===ab;trainingData.push({features:cp.features,label:ab?1:0});if(trainingData.length>100)trainingData.shift();if(trainingData.length>=30&&trainingData.length%5===0)trainModels();stats.total++;if(ok){stats.correct++;stats.currentStreak++}else stats.currentStreak=0;if(parseFloat(cp.confidence)>=70){stats.highConfPredictions++;if(ok)stats.highConfCorrect++}if(cp.signals)cp.signals.forEach(sig=>{const sn=sig.name.split(' ')[0].toLowerCase();if(!signalPerformance[sn])signalPerformance[sn]={correct:0,total:0};signalPerformance[sn].total++;if(ok)signalPerformance[sn].correct++;const a=signalPerformance[sn].correct/signalPerformance[sn].total;if(signalPerformance[sn].total>=5)Object.keys(signalWeights).forEach(k=>{if(sn.includes(k)){if(a>.6)signalWeights[k]=Math.min(signalWeights[k]*1.05,5);else if(a<.4)signalWeights[k]=Math.max(signalWeights[k]*.95,.5)}})});predictionHistory.unshift({timestamp:fmt(new Date()),targetTime:fmt(cp.targetTime),priceToBeat:'$'+cp.priceToBeat.toFixed(2),predicted:pw?'WILL BEAT':'WON\'T BEAT',actual:ab?'DID BEAT':'DIDN\'T',correct:ok,actualPrice:'$'+np.toFixed(2),confidence:cp.confidence+'%',timeframe:selectedTimeframe+'m',pattern:cp.pattern?cp.pattern.pattern:null});if(predictionHistory.length>50)predictionHistory.pop();updateStats();updateHistoryDisplay();updateSignalPerformance();saveProgress();m.currentPrediction=null}
@@ -432,32 +432,32 @@ function updateSignalPerformance(){const el=document.getElementById('signalPerfo
 
 // ═══ MAIN ═══
 async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),now=new Date;priceHistory.push({price,volume:vl,timestamp:now.getTime()});if(priceHistory.length>100)priceHistory.shift();
-// Update ALL markets independently
+// Update ALL markets independently using slot detection
 [5,15,60].forEach(tf=>{
   const m=markets[tf];
-  // Check if we're at an interval mark (within first 10 seconds)
-  if(isAtMark(now,tf)&&(!m.lastMarkTime||(now.getTime()-m.lastMarkTime)>(tf*60000-30000))){
-    m.lastMarkTime=now.getTime();
-    if(m.nextPredictionTime&&now>=m.nextPredictionTime&&m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
-    m.priceToBeat=price;
-    m.nextPredictionTime=getNextMark(tf);
+  const currentSlot=getSlot(tf,now);
+  // If slot changed or no slot yet → new interval started
+  if(m.currentSlot!==null&&m.currentSlot!==currentSlot){
+    // Slot just changed — check previous prediction before setting new PTB
+    if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
+    m.currentPrediction=null;
   }
-  // If no PTB set yet, set it now (first run or missed the mark)
-  if(!m.priceToBeat){
+  if(m.currentSlot!==currentSlot){
     m.priceToBeat=price;
-    m.nextPredictionTime=getNextMark(tf);
-    m.lastMarkTime=now.getTime();
+    m.currentSlot=currentSlot;
   }
 });
 await updateDisplay(price,vl)}
 function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;
-// Initialize all markets with current price immediately
+// Set initial slots and PTB for all markets
+const price=latestBtcPrice||0;const now=new Date();
 [5,15,60].forEach(tf=>{
-  markets[tf].nextPredictionTime=getNextMark(tf);
+  markets[tf].currentSlot=getSlot(tf,now);
+  if(!markets[tf].priceToBeat&&price)markets[tf].priceToBeat=price;
 });
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
-function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,lastMarkTime:null,currentPrediction:null,nextPredictionTime:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
+function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,currentSlot:null,currentPrediction:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
 window.addEventListener('DOMContentLoaded',()=>{if(loadProgress())document.getElementById('status').innerHTML='<strong>Progress restored</strong> &mdash; Click Start'});
 </script>
 </body>
