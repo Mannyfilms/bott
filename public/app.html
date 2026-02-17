@@ -107,7 +107,7 @@
 <div class="shell">
     <nav class="nav">
         <div class="nav-mark">&#8383;</div>
-        <div class="nav-text"><h1>BTC Prediction</h1><span>5-Minute Forecasts &middot; Binance Live (Polymarket Source)</span></div>
+        <div class="nav-text"><h1>BTC Prediction</h1><span>5-Minute Forecasts &middot; Chainlink BTC/USD (Polymarket Source)</span></div>
         <div class="nav-right">
             <span class="nav-user" id="userGreeting"></span>
             <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
@@ -326,7 +326,49 @@ setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgres
 // ═══ UTILITY ═══
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
 let btcWs=null,latestBtcPrice=null;
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+let polyWs=null,latestChainlinkPrice=null;
+
+// PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
+function connectPolyWs(){
+  try{
+    polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
+    polyWs.onopen=function(){
+      // Subscribe to Chainlink BTC/USD (what Polymarket uses for settlement)
+      polyWs.send(JSON.stringify({
+        action:'subscribe',
+        subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
+      }));
+      // Also subscribe to Binance BTC/USDT for backup
+      polyWs.send(JSON.stringify({
+        action:'subscribe',
+        subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
+      }));
+      console.log('Connected to Polymarket RTDS');
+    };
+    polyWs.onmessage=function(e){
+      try{
+        const d=JSON.parse(e.data);
+        if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
+          latestChainlinkPrice=d.payload.value;
+          latestBtcPrice=d.payload.value; // Use Chainlink as primary
+        }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
+          if(!latestChainlinkPrice)latestBtcPrice=d.payload.value; // Fallback to Binance
+        }
+      }catch(ex){}
+    };
+    // Send pings every 5 seconds to keep alive
+    let pingInterval=setInterval(()=>{
+      if(polyWs.readyState===1)polyWs.send('PING');
+      else{clearInterval(pingInterval)}
+    },5000);
+    polyWs.onclose=function(){clearInterval(pingInterval);setTimeout(connectPolyWs,3000)};
+    polyWs.onerror=function(){polyWs.close()};
+  }catch(e){setTimeout(connectPolyWs,5000)}
+}
+
+// BACKUP: Binance WebSocket (in case Polymarket RTDS fails)
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+connectPolyWs();
 connectBtcWs();
 async function fetchBTCPrice(){if(latestBtcPrice)return latestBtcPrice;try{const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');const d=await r.json();return parseFloat(d.price)}catch(e){return simPrice()}}
 let lsp=68360,lsv=1e6;
