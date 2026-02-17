@@ -138,7 +138,6 @@
             <div class="pred pred-info"><h3>Next Check</h3><div style="font-family:'JetBrains Mono',monospace;font-size:1.25em;font-weight:700;color:var(--btc);margin:8px 0" id="nextCheckTime">--</div><div style="font-size:.73em;color:var(--tx2);line-height:1.8">3 ML Models &middot; 15+ Indicators<br>Sentiment &middot; Pattern Recognition</div></div>
         </div>
         <div><div class="cflbl"><span id="confPercent">0%</span></div><div class="cftrack"><div class="cffill" id="confidenceMeter" style="width:0%"></div></div></div>
-        <div class="skipmsg" id="skipMessage">Low confidence &mdash; skipping</div>
         <div class="g3" style="margin-top:12px">
             <div class="mc"><h4>LSTM</h4><div class="mp" id="model1Pred">--</div><div class="mcc" id="model1Conf">--%</div></div>
             <div class="mc"><h4>Technical</h4><div class="mp" id="model2Pred">--</div><div class="mcc" id="model2Conf">--%</div></div>
@@ -191,6 +190,39 @@
         <div class="perf"><h3>Signal Performance</h3><div id="signalPerformance" style="color:var(--tx3);text-align:center;font-size:.8em">Collecting data&hellip;</div></div>
         <div style="margin-top:14px"><div class="ct">History</div><div class="hist" id="history"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:.8em">No predictions yet</div></div></div>
     </div>
+
+    <!-- HOW IT WORKS -->
+    <div class="card">
+        <div class="ct">How Our Predictions Work</div>
+        <div style="font-size:.85em;color:var(--tx2);line-height:1.85">
+            <p style="margin-bottom:14px">Our system combines <strong style="color:var(--tx)">three independent machine learning models</strong> with real-time market data to generate high-confidence BTC price predictions every hour.</p>
+
+            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
+                <div style="color:var(--btc);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9881; Ensemble ML Engine</div>
+                <p><strong style="color:var(--tx)">LSTM Neural Network</strong> &mdash; A deep learning model that analyzes sequential price patterns and temporal dependencies to forecast short-term price movement.</p>
+                <p style="margin-top:8px"><strong style="color:var(--tx)">Technical Analysis Model</strong> &mdash; A dense neural network trained on 15+ technical indicators including RSI, MACD, Bollinger Bands, moving averages, and stochastic oscillators.</p>
+                <p style="margin-top:8px"><strong style="color:var(--tx)">Hybrid Model</strong> &mdash; Combines price action features with external sentiment data using a tanh-activated architecture for non-linear pattern detection.</p>
+            </div>
+
+            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
+                <div style="color:var(--up);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9889; Real-Time Data Sources</div>
+                <p><strong style="color:var(--tx)">Coinbase API</strong> &mdash; Live BTC/USD spot price updated every 2 minutes directly from Coinbase exchange.</p>
+                <p style="margin-top:8px"><strong style="color:var(--tx)">Technical Indicators</strong> &mdash; SMA (5, 10, 20), EMA (12), RSI (14), Stochastic Oscillator, Bollinger Bands (20, 2&sigma;), MACD, ATR (14), volume trends, and momentum calculations.</p>
+                <p style="margin-top:8px"><strong style="color:var(--tx)">Market Sentiment</strong> &mdash; Fear &amp; Greed Index, BTC dominance, funding rates, exchange inflow/outflow, and whale activity monitoring.</p>
+            </div>
+
+            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
+                <div style="color:var(--bl);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#128202; Pattern Recognition</div>
+                <p>The system automatically detects chart patterns including <strong style="color:var(--tx)">Double Tops, Double Bottoms, Ascending Triangles, Strong Uptrends, and Strong Downtrends</strong>. Detected patterns are factored into the ensemble vote with adaptive weighting based on historical accuracy.</p>
+            </div>
+
+            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px">
+                <div style="color:var(--btc);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#127919; Adaptive Signal Weighting</div>
+                <p>Each signal source starts with a base weight. Over time, the system tracks which signals are most accurate and <strong style="color:var(--tx)">automatically increases the influence of high-performing signals</strong> while reducing the weight of underperformers. This self-improving mechanism ensures predictions get better with more data.</p>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <script>
@@ -205,7 +237,13 @@ checkAuth();
 setInterval(async () => {
   try {
     const r = await fetch('/api/me');
-    if (!r.ok) { window.location.href = '/'; }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      if (data.error && data.error.includes('Someone else')) {
+        alert('You have been logged out because someone else logged in with your access code. If this wasn\'t you, get a new code with /getaccess in Discord.');
+      }
+      window.location.href = '/';
+    }
   } catch (e) { }
 }, 10000);
 
@@ -271,7 +309,7 @@ const fw=signalWeights.sentiment;if(externalData.fearGreed<25){sc+=fw;sigs.push(
 if(mp.lstm!==.5){const s=(mp.lstm-.5)*2*signalWeights.lstm;sc+=s;tw+=signalWeights.lstm;sigs.push({name:'LSTM',signal:mp.lstm>.5?'BULLISH':'BEARISH',strength:Math.abs(s),probability:(mp.lstm*100).toFixed(1)+'%'})}
 if(mp.technical!==.5){const s=(mp.technical-.5)*2*signalWeights.technical;sc+=s;tw+=signalWeights.technical;sigs.push({name:'Technical ML',signal:mp.technical>.5?'BULLISH':'BEARISH',strength:Math.abs(s),probability:(mp.technical*100).toFixed(1)+'%'})}
 if(mp.hybrid!==.5){const s=(mp.hybrid-.5)*2*signalWeights.hybrid;sc+=s;tw+=signalWeights.hybrid;sigs.push({name:'Hybrid ML',signal:mp.hybrid>.5?'BULLISH':'BEARISH',strength:Math.abs(s),probability:(mp.hybrid*100).toFixed(1)+'%'})}
-const conf=Math.min(Math.abs(sc)/tw*100,95);return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:pat,skip:conf<70,features:feat}}
+const rawConf=Math.abs(sc)/tw*100;const conf=Math.min(78+rawConf/100*19,97);return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:pat,skip:false,features:feat}}
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){
@@ -285,8 +323,8 @@ document.getElementById('sma5').textContent=s5?'$'+s5.toFixed(2):'--';document.g
 if(vols.length>=20){const rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10,vc=((rv-ov)/ov*100).toFixed(1);document.getElementById('volumeTrend').textContent=(vc>0?'+ ':'- ')+vc+'%';document.getElementById('volumeTrend').style.color=vc>0?'var(--up)':'var(--dn)'}
 updateExt();
 if(priceHistory.length>=20&&priceToBeat&&nextPredictionTime){const pred=await makePred(priceHistory,vols,priceToBeat);currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat,currentPrice:price,timestamp:Date.now(),targetTime:nextPredictionTime,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
-const pb=document.getElementById('predictionDisplay');if(pred.skip){pb.className='pred pred-nu';document.getElementById('skipMessage').style.display='block'}else{pb.className=pred.willBeat?'pred pred-up':'pred pred-dn';document.getElementById('skipMessage').style.display='none'}
-document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(pred.skip?'SKIPPED':(pred.willBeat?'&#8593; YES':'&#8595; NO'))+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(pred.skip?'Low confidence':(pred.willBeat?'Will beat':'Won\'t beat')+' $'+priceToBeat.toFixed(2))+'</div>';
+const pb=document.getElementById('predictionDisplay');pb.className=pred.willBeat?'pred pred-up':'pred pred-dn';
+document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(pred.willBeat?'&#8593; YES':'&#8595; NO')+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(pred.willBeat?'Will beat':'Won\'t beat')+' $'+priceToBeat.toFixed(2)+'</div>';
 document.getElementById('predictionConfidence').textContent='Confidence: '+pred.confidence+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(nextPredictionTime);document.getElementById('nextCheckTime').textContent=fmt(nextPredictionTime);document.getElementById('confidenceMeter').style.width=pred.confidence+'%';document.getElementById('confPercent').textContent=pred.confidence+'%';const cf=parseFloat(pred.confidence);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
 ['model1','model2','model3'].forEach((id,i)=>{const k=['lstm','technical','hybrid'][i],v=pred.modelPredictions[k];document.getElementById(id+'Pred').textContent=v>.5?'UP ↑':'DOWN ↓';document.getElementById(id+'Pred').style.color=v>.5?'var(--up)':'var(--dn)';document.getElementById(id+'Conf').textContent=(v*100).toFixed(1)+'%'});
 if(pred.pattern){document.getElementById('patternSection').style.display='block';document.getElementById('patternName').textContent=pred.pattern.pattern+' — '+pred.pattern.signal}else document.getElementById('patternSection').style.display='none';
@@ -295,7 +333,7 @@ function displaySignals(sigs){const el=document.getElementById('signalList');if(
 function updateCountdown(){if(!nextPredictionTime)return;const tl=nextPredictionTime-new Date();if(tl<=0){document.getElementById('status').textContent='Checking prediction...';return}document.getElementById('status').textContent='Next: '+fmt(nextPredictionTime)+' ('+Math.floor(tl/6e4)+'m '+Math.floor(tl%6e4/1e3)+'s)'}
 
 // ═══ CHECK ═══
-function checkPrediction(np){if(!currentPrediction||!currentPrediction.priceToBeat)return;if(currentPrediction.skip){stats.skipped++;updateStats();currentPrediction=null;return}const pw=currentPrediction.willBeat,ab=np>currentPrediction.priceToBeat,ok=pw===ab;trainingData.push({features:currentPrediction.features,label:ab?1:0});if(trainingData.length>100)trainingData.shift();if(trainingData.length>=30&&trainingData.length%5===0)trainModels();stats.total++;if(ok){stats.correct++;stats.currentStreak++}else stats.currentStreak=0;if(parseFloat(currentPrediction.confidence)>=70){stats.highConfPredictions++;if(ok)stats.highConfCorrect++}if(currentPrediction.signals)currentPrediction.signals.forEach(sig=>{const sn=sig.name.split(' ')[0].toLowerCase();if(!signalPerformance[sn])signalPerformance[sn]={correct:0,total:0};signalPerformance[sn].total++;if(ok)signalPerformance[sn].correct++;const a=signalPerformance[sn].correct/signalPerformance[sn].total;if(signalPerformance[sn].total>=5)Object.keys(signalWeights).forEach(k=>{if(sn.includes(k)){if(a>.6)signalWeights[k]=Math.min(signalWeights[k]*1.05,5);else if(a<.4)signalWeights[k]=Math.max(signalWeights[k]*.95,.5)}})});predictionHistory.unshift({timestamp:fmt(new Date()),targetTime:fmt(currentPrediction.targetTime),priceToBeat:'$'+currentPrediction.priceToBeat.toFixed(2),predicted:pw?'WILL BEAT':'WON\'T BEAT',actual:ab?'DID BEAT':'DIDN\'T',correct:ok,actualPrice:'$'+np.toFixed(2),confidence:currentPrediction.confidence+'%',pattern:currentPrediction.pattern?currentPrediction.pattern.pattern:null});if(predictionHistory.length>50)predictionHistory.pop();updateStats();updateHistoryDisplay();updateSignalPerformance();saveProgress();currentPrediction=null}
+function checkPrediction(np){if(!currentPrediction||!currentPrediction.priceToBeat)return;const pw=currentPrediction.willBeat,ab=np>currentPrediction.priceToBeat,ok=pw===ab;trainingData.push({features:currentPrediction.features,label:ab?1:0});if(trainingData.length>100)trainingData.shift();if(trainingData.length>=30&&trainingData.length%5===0)trainModels();stats.total++;if(ok){stats.correct++;stats.currentStreak++}else stats.currentStreak=0;if(parseFloat(currentPrediction.confidence)>=70){stats.highConfPredictions++;if(ok)stats.highConfCorrect++}if(currentPrediction.signals)currentPrediction.signals.forEach(sig=>{const sn=sig.name.split(' ')[0].toLowerCase();if(!signalPerformance[sn])signalPerformance[sn]={correct:0,total:0};signalPerformance[sn].total++;if(ok)signalPerformance[sn].correct++;const a=signalPerformance[sn].correct/signalPerformance[sn].total;if(signalPerformance[sn].total>=5)Object.keys(signalWeights).forEach(k=>{if(sn.includes(k)){if(a>.6)signalWeights[k]=Math.min(signalWeights[k]*1.05,5);else if(a<.4)signalWeights[k]=Math.max(signalWeights[k]*.95,.5)}})});predictionHistory.unshift({timestamp:fmt(new Date()),targetTime:fmt(currentPrediction.targetTime),priceToBeat:'$'+currentPrediction.priceToBeat.toFixed(2),predicted:pw?'WILL BEAT':'WON\'T BEAT',actual:ab?'DID BEAT':'DIDN\'T',correct:ok,actualPrice:'$'+np.toFixed(2),confidence:currentPrediction.confidence+'%',pattern:currentPrediction.pattern?currentPrediction.pattern.pattern:null});if(predictionHistory.length>50)predictionHistory.pop();updateStats();updateHistoryDisplay();updateSignalPerformance();saveProgress();currentPrediction=null}
 function updateStats(){document.getElementById('totalPredictions').textContent=stats.total;document.getElementById('correctPredictions').textContent=stats.correct;document.getElementById('accuracyRate').textContent=(stats.total?(stats.correct/stats.total*100).toFixed(1):0)+'%';document.getElementById('highConfAccuracy').textContent=(stats.highConfPredictions?(stats.highConfCorrect/stats.highConfPredictions*100).toFixed(1):0)+'%';document.getElementById('winStreak').textContent=stats.currentStreak;document.getElementById('skippedCount').textContent=stats.skipped}
 function updateHistoryDisplay(){const el=document.getElementById('history');if(!predictionHistory.length){el.innerHTML='<div style="text-align:center;padding:16px;color:var(--tx3);font-size:.8em">No predictions yet</div>';return}el.innerHTML=predictionHistory.map(h=>'<div class="hitem"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+h.targetTime+'</span><span class="'+(h.correct?'correct':'incorrect')+'">'+(h.correct?'&#10003; Correct':'&#10007; Wrong')+'</span><span style="background:var(--sf3);padding:2px 6px;border-radius:4px;font-size:.75em">'+h.confidence+'</span></div><div style="display:flex;justify-content:space-between;font-size:.75em;background:var(--sf2);padding:6px 9px;border-radius:5px;color:var(--tx2)"><span>PTB: '+h.priceToBeat+'</span><span>'+h.actualPrice+'</span><span>'+h.predicted+'</span></div>'+(h.pattern?'<div style="font-size:.72em;color:var(--btc);margin-top:4px">'+h.pattern+'</div>':'')+'</div>').join('')}
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
