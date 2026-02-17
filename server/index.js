@@ -2,7 +2,8 @@ const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
-const { verifyCode } = require('./database.js');
+const crypto = require('crypto');
+const { verifyCode, setSession, checkSession } = require('./database.js');
 
 require('../bot/index.js');
 
@@ -18,6 +19,10 @@ function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
     const payload = jwt.verify(token, SECRET);
+    if (!checkSession(payload.discordId, payload.sessionId)) {
+      res.clearCookie('session');
+      return res.status(401).json({ error: 'Session expired. Someone else may have logged in with your code.' });
+    }
     req.user = payload;
     next();
   } catch (e) {
@@ -32,8 +37,10 @@ app.post('/api/verify', (req, res) => {
   const user = verifyCode(code);
   console.log('Verify result:', user ? user.discord_username : 'NOT FOUND');
   if (!user) return res.status(403).json({ error: 'Invalid or revoked code' });
+  const sessionId = crypto.randomBytes(16).toString('hex');
+  setSession(user.discord_id, sessionId);
   const token = jwt.sign(
-    { discordId: user.discord_id, username: user.discord_username },
+    { discordId: user.discord_id, username: user.discord_username, sessionId: sessionId },
     SECRET,
     { expiresIn: '7d' }
   );
@@ -64,7 +71,12 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 app.get('/', (req, res) => {
   const token = req.cookies?.session;
   if (token) {
-    try { jwt.verify(token, SECRET); return res.redirect('/app'); } catch (e) {}
+    try {
+      const payload = jwt.verify(token, SECRET);
+      if (checkSession(payload.discordId, payload.sessionId)) {
+        return res.redirect('/app');
+      }
+    } catch (e) {}
   }
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
