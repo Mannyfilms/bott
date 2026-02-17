@@ -202,6 +202,12 @@ async function logout(){
     await fetch('/api/logout',{method:'POST'});window.location.href='/';
 }
 checkAuth();
+setInterval(async () => {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) { window.location.href = '/'; }
+  } catch (e) { }
+}, 10000);
 
 // ═══ STATE ═══
 let priceHistory=[],predictionHistory=[],currentPrediction=null,updateInterval=null,checkInterval=null;
