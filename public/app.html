@@ -494,31 +494,62 @@ function candlePatterns(candles){
 
 // ═══ ORDER BOOK IMBALANCE (highest impact for 5-min) ═══
 let orderBookData={bidTotal:0,askTotal:0,imbalance:0,bigBidWalls:[],bigAskWalls:[],spread:0,bidDepth5:[],askDepth5:[]};
+let orderBookHistory=[]; // Track last N snapshots for recency weighting
 async function fetchOrderBook(){
   try{
     const r=await fetch('https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=20');
     const d=await r.json();
     const bids=d.bids.map(b=>({price:parseFloat(b[0]),qty:parseFloat(b[1])}));
     const asks=d.asks.map(a=>({price:parseFloat(a[0]),qty:parseFloat(a[1])}));
-    // Total bid/ask volume in top 20 levels
     const bidTotal=bids.reduce((s,b)=>s+b.qty*b.price,0);
     const askTotal=asks.reduce((s,a)=>s+a.qty*a.price,0);
-    // Imbalance: >0 = more bids (bullish), <0 = more asks (bearish)
     const imbalance=(bidTotal-askTotal)/(bidTotal+askTotal);
-    // Detect big walls (>3x average level size)
     const avgBid=bidTotal/bids.length;
     const avgAsk=askTotal/asks.length;
     const bigBidWalls=bids.filter(b=>b.qty*b.price>avgBid*3);
     const bigAskWalls=asks.filter(a=>a.qty*a.price>avgAsk*3);
-    // Bid-ask spread
     const spread=asks[0].price-bids[0].price;
-    // Depth at 5 levels (close to market = more important)
     const bidDepth5=bids.slice(0,5).reduce((s,b)=>s+b.qty*b.price,0);
     const askDepth5=asks.slice(0,5).reduce((s,a)=>s+a.qty*a.price,0);
-    orderBookData={bidTotal,askTotal,imbalance,bigBidWalls,bigAskWalls,spread,bidDepth5,askDepth5,
-      nearImbalance:(bidDepth5-askDepth5)/(bidDepth5+askDepth5)};
+    const nearImbalance=(bidDepth5-askDepth5)/(bidDepth5+askDepth5);
+    orderBookData={bidTotal,askTotal,imbalance,bigBidWalls,bigAskWalls,spread,bidDepth5,askDepth5,nearImbalance};
+    // Track history for recency analysis
+    orderBookHistory.push({imbalance,nearImbalance,timestamp:Date.now()});
+    if(orderBookHistory.length>12)orderBookHistory.shift(); // Keep last ~60 sec (12 x 5s)
     return orderBookData;
   }catch(e){return null}
+}
+
+// Order book momentum: is the imbalance GROWING or SHRINKING?
+function getOrderBookMomentum(){
+  if(orderBookHistory.length<3)return 0;
+  const recent=orderBookHistory.slice(-3).reduce((s,h)=>s+h.nearImbalance,0)/3;
+  const older=orderBookHistory.slice(0,Math.min(3,orderBookHistory.length-3)).reduce((s,h)=>s+h.nearImbalance,0)/Math.min(3,orderBookHistory.length-3);
+  return recent-older; // Positive = bids growing, negative = asks growing
+}
+
+// Trade flow history for momentum
+let tradeFlowHistory=[];
+function getTradeFlowMomentum(){
+  if(tradeFlowHistory.length<3)return 0;
+  const recent=tradeFlowHistory.slice(-3).reduce((s,r)=>s+r,0)/3;
+  const older=tradeFlowHistory.slice(0,Math.min(3,tradeFlowHistory.length-3)).reduce((s,r)=>s+r,0)/Math.min(3,tradeFlowHistory.length-3);
+  return recent-older;
+}
+
+// ═══ REGIME DETECTION (trending vs ranging) ═══
+function detectRegime(prices){
+  if(prices.length<50)return'UNKNOWN';
+  const adxVal=adx(prices);
+  const atrVal=atr(prices);
+  const avgPrice=sma(prices,20);
+  const volatility=atrVal&&avgPrice?(atrVal/avgPrice*100):0;
+  // ADX > 25 and directional = trending
+  if(adxVal&&adxVal.adx>25)return adxVal.pDI>adxVal.nDI?'TRENDING_UP':'TRENDING_DOWN';
+  // Low ADX + low volatility = ranging
+  if(adxVal&&adxVal.adx<20&&volatility<0.3)return'RANGING';
+  // Medium = choppy
+  return'CHOPPY';
 }
 
 // ═══ OPEN INTEREST (futures positioning) ═══
@@ -553,6 +584,8 @@ async function fetchRecentTrades(){
     });
     tradeFlowData={buyVolume:buyVol,sellVolume:sellVol,
       buyRatio:buyVol/(buyVol+sellVol),largeBuys,largeSells};
+    tradeFlowHistory.push(tradeFlowData.buyRatio);
+    if(tradeFlowHistory.length>12)tradeFlowHistory.shift();
     return tradeFlowData;
   }catch(e){return null}
 }
@@ -681,13 +714,23 @@ const jp=prices.map(p=>p.price),cur=jp[jp.length-1];
 const candles=prices.filter(p=>p.open).slice(-50);
 let sigs=[],sc=0,tw=0;
 
+// ★ REGIME DETECTION — adapt strategy weights
+const regime=detectRegime(jp);
+const isTrending=regime.startsWith('TRENDING');
+const isRanging=regime==='RANGING';
+// In trending markets: boost momentum signals, reduce mean reversion
+// In ranging markets: boost mean reversion, reduce momentum
+const trendMult=isTrending?1.5:isRanging?0.6:1;
+const revertMult=isRanging?1.8:isTrending?0.4:1;
+sigs.push({name:'Regime',signal:regime,strength:0});
+
 // 1. VWAP Strategy (institutional favorite)
 const vw=vwap(candles);
 if(vw){const w=3;if(cur>vw){sc+=w;sigs.push({name:'VWAP',signal:'BULLISH',strength:w})}else{sc-=w;sigs.push({name:'VWAP',signal:'BEARISH',strength:w})}tw+=w}
 
-// 2. EMA Ribbon (trend strength)
+// 2. EMA Ribbon (trend strength) — boosted in trends
 const ribbon=emaRibbon(jp);
-if(ribbon){const w=3;if(ribbon.bullish){sc+=w*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BULLISH',strength:w})}else if(ribbon.bearish){sc-=w*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BEARISH',strength:w})}else{const bias=ribbon.e8>ribbon.e21?1:-1;sc+=w*0.5*bias;sigs.push({name:'EMA Ribbon',signal:bias>0?'BULLISH':'BEARISH',strength:w*0.5})}tw+=w}
+if(ribbon){const w=3*trendMult;if(ribbon.bullish){sc+=w*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BULLISH',strength:w})}else if(ribbon.bearish){sc-=w*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BEARISH',strength:w})}else{const bias=ribbon.e8>ribbon.e21?1:-1;sc+=w*0.5*bias;sigs.push({name:'EMA Ribbon',signal:bias>0?'BULLISH':'BEARISH',strength:w*0.5})}tw+=w}
 
 // 3. RSI with divergence
 const rs=rsi(jp);
@@ -715,13 +758,13 @@ if(wr!==null){const w=2;if(wr>-20){sc-=w;sigs.push({name:'Williams %R',signal:'O
 const adxVal=adx(jp);
 if(adxVal){const w=2;if(adxVal.adx>25){if(adxVal.pDI>adxVal.nDI){sc+=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG UPTREND',strength:w})}else{sc-=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG DOWNTREND',strength:w})}}else{sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'RANGING',strength:0})}tw+=w}
 
-// 8. Mean Reversion (very effective for 5-min windows)
+// 8. Mean Reversion (★ boosted in ranging markets)
 const mr=meanReversion(jp);
-if(mr){const w=3;if(mr.zscore>1.5){sc-=w;sigs.push({name:'Mean Reversion',signal:'OVERBOUGHT (z:'+mr.zscore.toFixed(1)+')',strength:w})}else if(mr.zscore<-1.5){sc+=w;sigs.push({name:'Mean Reversion',signal:'OVERSOLD (z:'+mr.zscore.toFixed(1)+')',strength:w})}tw+=w*0.5}
+if(mr){const w=3*revertMult;if(mr.zscore>1.5){sc-=w;sigs.push({name:'Mean Reversion',signal:'OVERBOUGHT (z:'+mr.zscore.toFixed(1)+')',strength:w})}else if(mr.zscore<-1.5){sc+=w;sigs.push({name:'Mean Reversion',signal:'OVERSOLD (z:'+mr.zscore.toFixed(1)+')',strength:w})}tw+=w*0.5}
 
-// 9. Rate of Change (multi-timeframe momentum)
+// 9. Rate of Change (★ boosted in trending markets)
 const roc1=roc(jp,5),roc2=roc(jp,15),roc3=roc(jp,30);
-if(roc1!==null&&roc2!==null){const w=2.5;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
+if(roc1!==null&&roc2!==null){const w=2.5*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
 
 // 10. OBV (On Balance Volume)
 const obvVal=obv(jp,volumes);
@@ -810,10 +853,53 @@ if(pv){
 const vp=volumeProfile(jp,volumes);
 if(vp){
   const w=2;
-  // Price tends to gravitate toward POC
   if(vp.distToPoc>0.03){sc-=w*0.5;sigs.push({name:'Vol Profile',signal:'ABOVE POC → PULL DOWN',strength:w*0.5})}
   else if(vp.distToPoc<-0.03){sc+=w*0.5;sigs.push({name:'Vol Profile',signal:'BELOW POC → PULL UP',strength:w*0.5})}
   tw+=w*0.3;
+}
+
+// 22. ORDER BOOK MOMENTUM (★ recency weighting — last 30s changes)
+const obMom=getOrderBookMomentum();
+if(Math.abs(obMom)>0.01){
+  const w=3;
+  sc+=w*obMom*5;
+  sigs.push({name:'OB Momentum',signal:obMom>0?'BIDS GROWING ↑':'ASKS GROWING ↓',strength:w*Math.abs(obMom)*5});
+  tw+=w;
+}
+
+// 23. TRADE FLOW MOMENTUM (are buyers getting more aggressive?)
+const tfMom=getTradeFlowMomentum();
+if(Math.abs(tfMom)>0.02){
+  const w=2.5;
+  sc+=w*tfMom*5;
+  sigs.push({name:'Flow Momentum',signal:tfMom>0?'BUYING ACCELERATING':'SELLING ACCELERATING',strength:w*Math.abs(tfMom)*5});
+  tw+=w;
+}
+
+// ★ CONSENSUS SCORING — boost when top strategies agree
+let topBullish=0,topBearish=0;
+// Check order book direction
+if(orderBookData.imbalance>0.05)topBullish++;else if(orderBookData.imbalance<-0.05)topBearish++;
+// Check trade flow direction
+if(tradeFlowData.buyRatio>0.53)topBullish++;else if(tradeFlowData.buyRatio<0.47)topBearish++;
+// Check OI + price direction
+if(openInterestData.change>0&&jp[jp.length-1]>jp[Math.max(0,jp.length-10)])topBullish++;
+else if(openInterestData.change<0&&jp[jp.length-1]<jp[Math.max(0,jp.length-10)])topBearish++;
+// Check OB momentum
+if(obMom>0.02)topBullish++;else if(obMom<-0.02)topBearish++;
+
+const consensus=Math.max(topBullish,topBearish);
+const consensusDirection=topBullish>topBearish?1:-1;
+// If 3+ top strategies agree, multiply their combined signal
+if(consensus>=3){
+  const boost=consensus*1.5;
+  sc+=boost*consensusDirection;
+  tw+=2;
+  sigs.push({name:'★ Consensus ('+consensus+'/4)',signal:consensusDirection>0?'STRONG AGREEMENT → BULLISH':'STRONG AGREEMENT → BEARISH',strength:boost});
+}else if(consensus<=1){
+  // Low consensus = reduce confidence by dampening score
+  sc*=0.7;
+  sigs.push({name:'Consensus ('+consensus+'/4)',signal:'LOW AGREEMENT → UNCERTAIN',strength:0});
 }
 
 // ML Models
