@@ -422,45 +422,59 @@ function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/w
 connectPolyWs();
 connectBtcWs();
 
-// ═══ FETCH PTB DIRECTLY FROM POLYMARKET API ═══
-// Polymarket slugs are deterministic: btc-updown-5m-{unix_timestamp}
-// where timestamp = floor(now / 300) * 300
+// ═══ FETCH PTB FROM POLYMARKET ═══
+// Polymarket event slugs: btc-updown-5m-{unix_timestamp}
+// timestamp = floor(now / 300) * 300 (5-min windows aligned to epoch)
 async function fetchPolymarketPTB(){
   try{
-    const now=Math.floor(Date.now()/1000);
-    const windowTs=now-(now%300); // Current 5-min window start
-    const slug='btc-updown-5m-'+windowTs;
-    const r=await fetch('https://gamma-api.polymarket.com/events?slug='+slug);
-    const data=await r.json();
-    if(data&&data.length>0&&data[0].markets&&data[0].markets.length>0){
-      const market=data[0].markets[0];
-      // The description contains the price to beat
-      const desc=market.description||market.question||'';
-      // Try to extract PTB from description
-      const priceMatch=desc.match(/\$([0-9,]+\.?\d*)/);
-      if(priceMatch){
-        const ptb=parseFloat(priceMatch[1].replace(/,/g,''));
-        if(ptb>10000){
-          console.log('PTB from Polymarket API: $'+ptb);
-          return ptb;
+    // Get server-aligned timestamp (Polymarket uses UTC epoch / 300)
+    const nowSec=Math.floor(Date.now()/1000);
+    const windowTs=nowSec-(nowSec%300);
+    
+    // Try current window and previous window (in case we're right at the boundary)
+    for(const ts of [windowTs, windowTs-300]){
+      const slug='btc-updown-5m-'+ts;
+      try{
+        const r=await fetch('https://gamma-api.polymarket.com/events?slug='+slug+'&active=true');
+        if(!r.ok)continue;
+        const data=await r.json();
+        if(data&&data.length>0){
+          const evt=data[0];
+          // Look for startPrice, priceToBeat, or extract from description/title
+          if(evt.startPrice)return parseFloat(evt.startPrice);
+          // Check in markets
+          if(evt.markets&&evt.markets.length>0){
+            const mkt=evt.markets[0];
+            if(mkt.startPrice)return parseFloat(mkt.startPrice);
+            // Try extracting from description
+            const txt=mkt.description||mkt.question||evt.title||'';
+            const m=txt.match(/\$([0-9,]+\.\d+)/);
+            if(m){const p=parseFloat(m[1].replace(/,/g,''));if(p>10000)return p}
+          }
         }
-      }
-      // Also check if there's a startPrice or similar field
-      if(market.startPrice)return parseFloat(market.startPrice);
+      }catch(ex){continue}
     }
     return null;
-  }catch(e){console.log('Polymarket PTB fetch failed:',e);return null}
+  }catch(e){return null}
 }
 
-// Also try fetching PTB on page load for current window
-setTimeout(async()=>{
+// Try fetching PTB on load and every new slot
+let lastPtbFetchSlot=null;
+async function tryFetchPTB(){
+  const nowSec=Math.floor(Date.now()/1000);
+  const currentWindow=nowSec-(nowSec%300);
+  if(lastPtbFetchSlot===currentWindow)return; // Already fetched this slot
+  
   const ptb=await fetchPolymarketPTB();
   if(ptb&&markets[5]){
     markets[5].priceToBeat=ptb;
-    document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-    console.log('Initial PTB set from Polymarket: $'+ptb);
+    lastPtbFetchSlot=currentWindow;
+    console.log('PTB from Polymarket: $'+ptb);
   }
-},3000);
+}
+// Fetch PTB every 10 seconds until we get it for current slot
+setInterval(tryFetchPTB,10000);
+setTimeout(tryFetchPTB,2000);
 async function fetchBTCPrice(){if(latestBtcPrice)return latestBtcPrice;try{const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');const d=await r.json();return parseFloat(d.price)}catch(e){return simPrice()}}
 let lsp=68360,lsv=1e6;
 function simPrice(){lsp+=(Math.random()-.5)*100+(Math.random()-.5)*20;return lsp}
@@ -1334,14 +1348,12 @@ if(priceHistory.length>500)priceHistory.shift();
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // Fetch PTB from Polymarket API for 5-min market
+    // Set PTB immediately from current price (will be corrected by Polymarket API)
+    m.priceToBeat=price;
+    // Try to get exact PTB from Polymarket API
     if(tf===5){
-      fetchPolymarketPTB().then(ptb=>{
-        if(ptb)m.priceToBeat=ptb;
-        else m.priceToBeat=price; // Fallback
-      }).catch(()=>{m.priceToBeat=price});
-    }else{
-      m.priceToBeat=price;
+      lastPtbFetchSlot=null; // Reset so it fetches for new slot
+      tryFetchPTB();
     }
   }
 });
