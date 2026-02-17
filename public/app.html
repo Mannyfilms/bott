@@ -272,6 +272,32 @@ let markets={
   60:{priceToBeat:null,currentSlot:null,currentPrediction:null}
 };
 
+// ═══ POSITION TRACKER (stickiness) ═══
+// Tracks where price has been vs PTB throughout the current slot
+let positionHistory=[]; // Array of {above: bool, diff: number, timestamp}
+function trackPosition(price,ptb){
+  if(!ptb)return;
+  positionHistory.push({above:price>=ptb,diff:price-ptb,timestamp:Date.now()});
+  // Keep last 60 samples (~5 min at 5-sec intervals)
+  if(positionHistory.length>60)positionHistory.shift();
+}
+function resetPositionHistory(){positionHistory=[];}
+function getPositionBias(){
+  if(positionHistory.length<2)return{bias:0,abovePct:0.5,avgDiff:0,trend:0};
+  const aboveCount=positionHistory.filter(p=>p.above).length;
+  const abovePct=aboveCount/positionHistory.length;
+  const avgDiff=positionHistory.reduce((s,p)=>s+p.diff,0)/positionHistory.length;
+  // Recent trend: are we moving toward or away from PTB?
+  const recentHalf=positionHistory.slice(-Math.floor(positionHistory.length/2));
+  const olderHalf=positionHistory.slice(0,Math.floor(positionHistory.length/2));
+  const recentAvg=recentHalf.reduce((s,p)=>s+p.diff,0)/recentHalf.length;
+  const olderAvg=olderHalf.length?olderHalf.reduce((s,p)=>s+p.diff,0)/olderHalf.length:recentAvg;
+  const trend=recentAvg-olderAvg; // Positive = moving higher, negative = moving lower
+  // Bias: strong positive = been above most of the time, negative = below
+  const bias=(abovePct-0.5)*2; // -1 to +1
+  return{bias,abovePct,avgDiff,trend};
+}
+
 // Get the current time slot for a timeframe
 // e.g. for 5min at 14:37 → slot is "14:35", at 14:40 → slot is "14:40"
 function getSlot(tf,date){
@@ -783,6 +809,41 @@ let sigs=[],sc=0,tw=0;
   }
 }
 
+// ★★★ STRATEGY 0B: POSITION STICKINESS (where has price BEEN this slot?) ★★★
+// If price was above PTB 80% of the slot and just dipped $5 below, still likely YES
+// If price was below PTB 90% of the slot and just spiked $5 above, still likely NO
+{
+  const pb=getPositionBias();
+  if(positionHistory.length>=3){
+    const w=8; // Very heavy weight — this is one of the most reliable signals
+    const abovePct=pb.abovePct;
+    const avgDiff=pb.avgDiff;
+    
+    // Strong stickiness: if above 70%+ of the time, bias YES even if currently slightly below
+    if(abovePct>0.7){
+      sc+=w*(abovePct-0.5)*3;
+      sigs.push({name:'★ Position History',signal:'ABOVE '+(abovePct*100).toFixed(0)+'% of slot (avg +$'+avgDiff.toFixed(0)+') → YES BIAS',strength:w*abovePct});
+    }else if(abovePct<0.3){
+      sc-=w*(0.5-abovePct)*3;
+      sigs.push({name:'★ Position History',signal:'BELOW '+(100-abovePct*100).toFixed(0)+'% of slot (avg $'+avgDiff.toFixed(0)+') → NO BIAS',strength:w*(1-abovePct)});
+    }else{
+      // Mixed — slight bias based on average position
+      const bias=avgDiff>0?1:-1;
+      sc+=w*0.3*bias;
+      sigs.push({name:'Position History',signal:'MIXED ('+(abovePct*100).toFixed(0)+'% above, avg $'+avgDiff.toFixed(0)+')',strength:w*0.3});
+    }
+    tw+=w;
+    
+    // Trend within slot: is price drifting toward or away from PTB?
+    if(Math.abs(pb.trend)>5){
+      const trendW=3;
+      sc+=pb.trend>0?trendW:-trendW;
+      sigs.push({name:'Slot Trend',signal:pb.trend>0?'DRIFTING UP ↑':'DRIFTING DOWN ↓',strength:trendW});
+      tw+=trendW;
+    }
+  }
+}
+
 // ★ REGIME DETECTION — adapt strategy weights
 const regime=detectRegime(jp);
 const isTrending=regime.startsWith('TRENDING');
@@ -1025,12 +1086,16 @@ if(priceHistory.length>500)priceHistory.shift();
   if(m.currentSlot!==null&&m.currentSlot!==currentSlot){
     if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
     m.currentPrediction=null;
+    if(tf===selectedTimeframe)resetPositionHistory(); // New slot = fresh tracking
   }
   if(m.currentSlot!==currentSlot){
     m.priceToBeat=price;
     m.currentSlot=currentSlot;
   }
 });
+// Track position vs PTB every tick
+const activeM=getActiveMarket();
+if(activeM.priceToBeat)trackPosition(price,activeM.priceToBeat);
 // Refresh candles and buy/sell data every 60 seconds
 if(extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
 await updateDisplay(price,vl)}
