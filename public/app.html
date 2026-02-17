@@ -466,7 +466,7 @@ const price=latestBtcPrice||0;const now=new Date();
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,currentSlot:null,currentPrediction:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
-window.addEventListener('DOMContentLoaded',()=>{if(loadProgress())document.getElementById('status').innerHTML='<strong>Progress restored</strong> &mdash; Click Start'});
+window.addEventListener('DOMContentLoaded',()=>{loadProgress();setTimeout(()=>startPredictions(),5000)});
 </script>
 </body>
 </html>
