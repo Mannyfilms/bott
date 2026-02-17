@@ -388,9 +388,10 @@ function connectPolyWs(){
         const d=JSON.parse(e.data);
         if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
           latestChainlinkPrice=d.payload.value;
-          // Don't override Binance as primary — Binance is closer to what Polymarket shows
+          latestBtcPrice=d.payload.value; // Chainlink is primary when available
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
-          latestBtcPrice=d.payload.value; // Binance from Polymarket RTDS
+          // Only use Binance if Chainlink hasn't connected yet
+          if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
         }
       }catch(ex){}
     };
@@ -404,7 +405,7 @@ function connectPolyWs(){
 }
 
 // BACKUP: Binance WebSocket (in case Polymarket RTDS fails)
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();
 connectBtcWs();
 
@@ -461,7 +462,21 @@ async function tryFetchPTB(){
 // Fetch PTB every 10 seconds until we get it for current slot
 setInterval(tryFetchPTB,10000);
 setTimeout(tryFetchPTB,2000);
-async function fetchBTCPrice(){if(latestBtcPrice)return latestBtcPrice;try{const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');const d=await r.json();return parseFloat(d.price)}catch(e){return simPrice()}}
+// USDT typically trades at ~$0.9995-1.0005 vs USD
+// Polymarket uses Chainlink BTC/USD, Binance gives BTC/USDT
+// We apply a small correction factor when falling back to Binance
+const USDT_USD_FACTOR=0.9995; // USDT is slightly less than 1 USD
+async function fetchBTCPrice(){
+  if(latestBtcPrice)return latestBtcPrice;
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+    const d=await r.json();
+    const binancePrice=parseFloat(d.price);
+    // Apply correction if Chainlink isn't connected yet
+    if(!latestChainlinkPrice)return binancePrice*USDT_USD_FACTOR;
+    return binancePrice;
+  }catch(e){return simPrice()}
+}
 let lsp=68360,lsv=1e6;
 function simPrice(){lsp+=(Math.random()-.5)*100+(Math.random()-.5)*20;return lsp}
 let realVolume=0;
