@@ -360,7 +360,12 @@ async function loadHistoricalData(){
     }));
     // Fetch buy/sell ratio
     await fetchTakerVolume();
-    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; 200 candles loaded &middot; All strategies online';
+    // Fetch order book, open interest, trade flow, long/short ratio
+    await fetchOrderBook();
+    await fetchOpenInterest();
+    await fetchRecentTrades();
+    await fetchLongShortRatio();
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; 200 candles + order book loaded &middot; 21 strategies online';
     return true;
   }catch(e){
     console.error('Failed to load historical:',e);
@@ -477,18 +482,129 @@ function candlePatterns(candles){
   const bodyLast=Math.abs(last.close-last.open);
   const bodyPrev=Math.abs(prev.close-prev.open);
   const rangeLast=last.high-last.low;
-  // Doji - indecision
   if(bodyLast<rangeLast*0.1&&rangeLast>0)return{pattern:'Doji',signal:'REVERSAL',strength:1.5};
-  // Hammer - bullish reversal
   const lowerWick=Math.min(last.open,last.close)-last.low;
   if(lowerWick>bodyLast*2&&last.close>last.open)return{pattern:'Hammer',signal:'BULLISH',strength:2};
-  // Shooting Star - bearish reversal
   const upperWick=last.high-Math.max(last.open,last.close);
   if(upperWick>bodyLast*2&&last.close<last.open)return{pattern:'Shooting Star',signal:'BEARISH',strength:2};
-  // Engulfing
   if(last.close>last.open&&prev.close<prev.open&&bodyLast>bodyPrev*1.5)return{pattern:'Bullish Engulfing',signal:'BULLISH',strength:2.5};
   if(last.close<last.open&&prev.close>prev.open&&bodyLast>bodyPrev*1.5)return{pattern:'Bearish Engulfing',signal:'BEARISH',strength:2.5};
   return null;
+}
+
+// ═══ ORDER BOOK IMBALANCE (highest impact for 5-min) ═══
+let orderBookData={bidTotal:0,askTotal:0,imbalance:0,bigBidWalls:[],bigAskWalls:[],spread:0,bidDepth5:[],askDepth5:[]};
+async function fetchOrderBook(){
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=20');
+    const d=await r.json();
+    const bids=d.bids.map(b=>({price:parseFloat(b[0]),qty:parseFloat(b[1])}));
+    const asks=d.asks.map(a=>({price:parseFloat(a[0]),qty:parseFloat(a[1])}));
+    // Total bid/ask volume in top 20 levels
+    const bidTotal=bids.reduce((s,b)=>s+b.qty*b.price,0);
+    const askTotal=asks.reduce((s,a)=>s+a.qty*a.price,0);
+    // Imbalance: >0 = more bids (bullish), <0 = more asks (bearish)
+    const imbalance=(bidTotal-askTotal)/(bidTotal+askTotal);
+    // Detect big walls (>3x average level size)
+    const avgBid=bidTotal/bids.length;
+    const avgAsk=askTotal/asks.length;
+    const bigBidWalls=bids.filter(b=>b.qty*b.price>avgBid*3);
+    const bigAskWalls=asks.filter(a=>a.qty*a.price>avgAsk*3);
+    // Bid-ask spread
+    const spread=asks[0].price-bids[0].price;
+    // Depth at 5 levels (close to market = more important)
+    const bidDepth5=bids.slice(0,5).reduce((s,b)=>s+b.qty*b.price,0);
+    const askDepth5=asks.slice(0,5).reduce((s,a)=>s+a.qty*a.price,0);
+    orderBookData={bidTotal,askTotal,imbalance,bigBidWalls,bigAskWalls,spread,bidDepth5,askDepth5,
+      nearImbalance:(bidDepth5-askDepth5)/(bidDepth5+askDepth5)};
+    return orderBookData;
+  }catch(e){return null}
+}
+
+// ═══ OPEN INTEREST (futures positioning) ═══
+let openInterestData={current:0,change:0,history:[]};
+async function fetchOpenInterest(){
+  try{
+    const r=await fetch('https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT');
+    const d=await r.json();
+    const current=parseFloat(d.openInterest);
+    const prev=openInterestData.current;
+    openInterestData.history.push(current);
+    if(openInterestData.history.length>30)openInterestData.history.shift();
+    openInterestData.current=current;
+    openInterestData.change=prev?((current-prev)/prev*100):0;
+    return openInterestData;
+  }catch(e){return null}
+}
+
+// ═══ RECENT TRADES FLOW (aggressor analysis) ═══
+let tradeFlowData={buyVolume:0,sellVolume:0,buyRatio:0.5,largeBuys:0,largeSells:0};
+async function fetchRecentTrades(){
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=100');
+    const d=await r.json();
+    let buyVol=0,sellVol=0,largeBuys=0,largeSells=0;
+    const avgQty=d.reduce((s,t)=>s+parseFloat(t.qty),0)/d.length;
+    d.forEach(t=>{
+      const qty=parseFloat(t.qty);
+      const val=qty*parseFloat(t.price);
+      if(t.isBuyerMaker){sellVol+=val;if(qty>avgQty*3)largeSells++}
+      else{buyVol+=val;if(qty>avgQty*3)largeBuys++}
+    });
+    tradeFlowData={buyVolume:buyVol,sellVolume:sellVol,
+      buyRatio:buyVol/(buyVol+sellVol),largeBuys,largeSells};
+    return tradeFlowData;
+  }catch(e){return null}
+}
+
+// ═══ LONG/SHORT RATIO ═══
+let longShortRatio=1;
+async function fetchLongShortRatio(){
+  try{
+    const r=await fetch('https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=5m&limit=5');
+    const d=await r.json();
+    if(d&&d.length){longShortRatio=parseFloat(d[d.length-1].longShortRatio)}
+    return longShortRatio;
+  }catch(e){return null}
+}
+
+// ═══ PRICE VELOCITY & ACCELERATION ═══
+function priceVelocity(prices,period=10){
+  if(prices.length<period+1)return null;
+  const velocities=[];
+  for(let i=prices.length-period;i<prices.length;i++){
+    velocities.push(prices[i]-prices[i-1]);
+  }
+  const velocity=velocities.reduce((a,b)=>a+b,0)/velocities.length;
+  // Acceleration = change in velocity
+  const recentV=velocities.slice(-5).reduce((a,b)=>a+b,0)/5;
+  const olderV=velocities.slice(0,5).reduce((a,b)=>a+b,0)/5;
+  const acceleration=recentV-olderV;
+  return{velocity,acceleration,
+    signal:velocity>0&&acceleration>0?'ACCELERATING UP':
+           velocity<0&&acceleration<0?'ACCELERATING DOWN':
+           velocity>0&&acceleration<0?'DECELERATING UP':
+           velocity<0&&acceleration>0?'DECELERATING DOWN':'NEUTRAL'};
+}
+
+// ═══ VOLUME PROFILE (price magnet detection) ═══
+function volumeProfile(prices,volumes){
+  if(prices.length<50||volumes.length<50)return null;
+  // Create price buckets and sum volume at each level
+  const min=Math.min(...prices.slice(-50));
+  const max=Math.max(...prices.slice(-50));
+  const bucketSize=(max-min)/20||1;
+  const buckets={};
+  for(let i=Math.max(0,prices.length-50);i<prices.length;i++){
+    const bucket=Math.floor((prices[i]-min)/bucketSize);
+    buckets[bucket]=(buckets[bucket]||0)+(volumes[i]||1);
+  }
+  // Find the Point of Control (highest volume price level)
+  let maxVol=0,pocBucket=0;
+  Object.keys(buckets).forEach(k=>{if(buckets[k]>maxVol){maxVol=buckets[k];pocBucket=parseInt(k)}});
+  const poc=min+pocBucket*bucketSize+bucketSize/2;
+  const cur=prices[prices.length-1];
+  return{poc,abovePoc:cur>poc,distToPoc:((cur-poc)/poc*100)};
 }
 
 // ═══ INDICATORS ═══
@@ -512,7 +628,16 @@ async function fetchNetFlow(){try{const r=await fetch('https://api.binance.com/a
 let extUpdateCount=0;
 async function updateExt(){
 extUpdateCount++;
-// Fetch real data every 5th call (every ~25 sec) to avoid rate limits
+// HIGH IMPACT: Fetch order book, trades, OI every cycle (every 5 sec)
+try{
+  await fetchOrderBook();
+  await fetchRecentTrades();
+}catch(e){}
+// MEDIUM: Fetch OI and long/short every 3rd cycle (~15 sec)
+if(extUpdateCount%3===1){
+  try{await fetchOpenInterest();await fetchLongShortRatio()}catch(e){}
+}
+// LOW FREQUENCY: Fetch sentiment data every 5th call (~25 sec)
 if(extUpdateCount%5===1||extUpdateCount===1){
 const fg=await fetchFearGreed();
 if(fg){externalData.fearGreed=fg.value;externalData.sentiment=fg.value>60?'GREEDY':fg.value<40?'FEARFUL':'NEUTRAL'}
@@ -522,7 +647,6 @@ const fr=await fetchFundingRate();
 if(fr!==null){externalData.fundingRate=fr}
 const nf=await fetchNetFlow();
 if(nf){externalData.exchangeFlow=nf}
-// Whale activity from volume spike detection
 await fetchVolume();
 }
 document.getElementById('fearGreed').textContent=Math.round(externalData.fearGreed);
@@ -619,6 +743,78 @@ const fw=1.8;if(externalData.fearGreed<25){sc+=fw;sigs.push({name:'Fear & Greed 
 
 // 15. Funding Rate (contrarian)
 if(Math.abs(externalData.fundingRate)>0.01){const w=1.5;if(externalData.fundingRate>0.03){sc-=w;sigs.push({name:'Funding Rate',signal:'HIGH → BEARISH',strength:w})}else if(externalData.fundingRate<-0.01){sc+=w;sigs.push({name:'Funding Rate',signal:'NEGATIVE → BULLISH',strength:w})}tw+=w}
+
+// 16. ORDER BOOK IMBALANCE (★ highest impact for 5-min)
+if(orderBookData.bidTotal>0){
+  const w=4; // High weight - this is the best short-term predictor
+  const imb=orderBookData.imbalance;
+  const nearImb=orderBookData.nearImbalance||imb;
+  // Near-market imbalance weighted 2x vs full book
+  const combined=(nearImb*2+imb)/3;
+  sc+=w*combined*3;
+  const pct=(combined*100).toFixed(0);
+  const label=combined>0.15?'STRONG BID WALL':combined>0.05?'BID HEAVY':combined<-0.15?'STRONG ASK WALL':combined<-0.05?'ASK HEAVY':'BALANCED';
+  sigs.push({name:'Order Book ('+pct+'%)',signal:label+(combined>0?' → BULLISH':' → BEARISH'),strength:w*Math.abs(combined)*3});
+  tw+=w;
+  // Big wall detection
+  if(orderBookData.bigBidWalls.length>orderBookData.bigAskWalls.length){sc+=1;sigs.push({name:'Bid Walls',signal:orderBookData.bigBidWalls.length+' walls detected → SUPPORT',strength:1})}
+  else if(orderBookData.bigAskWalls.length>orderBookData.bigBidWalls.length){sc-=1;sigs.push({name:'Ask Walls',signal:orderBookData.bigAskWalls.length+' walls detected → RESISTANCE',strength:1})}
+}
+
+// 17. OPEN INTEREST + PRICE (★ high impact)
+if(openInterestData.current>0&&jp.length>=10){
+  const w=3;
+  const priceUp=jp[jp.length-1]>jp[jp.length-10];
+  const oiUp=openInterestData.change>0;
+  if(priceUp&&oiUp){sc+=w;sigs.push({name:'OI + Price',signal:'BOTH RISING → STRONG BULL',strength:w})}
+  else if(!priceUp&&!oiUp){sc-=w;sigs.push({name:'OI + Price',signal:'BOTH FALLING → STRONG BEAR',strength:w})}
+  else if(priceUp&&!oiUp){sc-=w*0.5;sigs.push({name:'OI + Price',signal:'PRICE UP / OI DOWN → WEAK RALLY',strength:w*0.5})}
+  else{sc+=w*0.5;sigs.push({name:'OI + Price',signal:'PRICE DOWN / OI UP → REVERSAL SOON',strength:w*0.5})}
+  tw+=w;
+}
+
+// 18. TRADE FLOW ANALYSIS (★ high impact)
+if(tradeFlowData.buyVolume>0){
+  const w=3.5;
+  const ratio=tradeFlowData.buyRatio;
+  const bias=(ratio-0.5)*2;
+  sc+=w*bias;
+  const label=ratio>0.6?'AGGRESSIVE BUYING':ratio>0.52?'NET BUYING':ratio<0.4?'AGGRESSIVE SELLING':ratio<0.48?'NET SELLING':'NEUTRAL';
+  sigs.push({name:'Trade Flow ('+(ratio*100).toFixed(0)+'% buy)',signal:label,strength:w*Math.abs(bias)});
+  tw+=w;
+  // Large trade detection
+  if(tradeFlowData.largeBuys>tradeFlowData.largeSells+2){sc+=1.5;sigs.push({name:'Large Trades',signal:tradeFlowData.largeBuys+' big buys vs '+tradeFlowData.largeSells+' sells',strength:1.5})}
+  else if(tradeFlowData.largeSells>tradeFlowData.largeBuys+2){sc-=1.5;sigs.push({name:'Large Trades',signal:tradeFlowData.largeSells+' big sells vs '+tradeFlowData.largeBuys+' buys',strength:1.5})}
+}
+
+// 19. LONG/SHORT RATIO (contrarian)
+if(longShortRatio>0){
+  const w=2;
+  if(longShortRatio>2){sc-=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'TOO MANY LONGS → BEARISH',strength:w})}
+  else if(longShortRatio<0.7){sc+=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'TOO MANY SHORTS → BULLISH',strength:w})}
+  tw+=w*0.5;
+}
+
+// 20. PRICE VELOCITY & ACCELERATION
+const pv=priceVelocity(jp);
+if(pv){
+  const w=2.5;
+  if(pv.velocity>0&&pv.acceleration>0){sc+=w*1.5;sigs.push({name:'Velocity',signal:'ACCELERATING UP ↑↑',strength:w})}
+  else if(pv.velocity<0&&pv.acceleration<0){sc-=w*1.5;sigs.push({name:'Velocity',signal:'ACCELERATING DOWN ↓↓',strength:w})}
+  else if(pv.velocity>0&&pv.acceleration<0){sc+=w*0.3;sigs.push({name:'Velocity',signal:'SLOWING UP ↑↓',strength:w*0.5})}
+  else if(pv.velocity<0&&pv.acceleration>0){sc-=w*0.3;sigs.push({name:'Velocity',signal:'SLOWING DOWN ↓↑',strength:w*0.5})}
+  tw+=w;
+}
+
+// 21. VOLUME PROFILE (Point of Control magnet)
+const vp=volumeProfile(jp,volumes);
+if(vp){
+  const w=2;
+  // Price tends to gravitate toward POC
+  if(vp.distToPoc>0.03){sc-=w*0.5;sigs.push({name:'Vol Profile',signal:'ABOVE POC → PULL DOWN',strength:w*0.5})}
+  else if(vp.distToPoc<-0.03){sc+=w*0.5;sigs.push({name:'Vol Profile',signal:'BELOW POC → PULL UP',strength:w*0.5})}
+  tw+=w*0.3;
+}
 
 // ML Models
 const feat=extractFeat(prices,volumes);
