@@ -1423,6 +1423,28 @@ const isBigGap=priceDiff>40; // $40+ gap
 const isSpike=spikeRatio>0.7; // Most of the move happened recently
 const useReversion=isBigGap&&isSpike;
 
+// RSI REVERSION BOOSTER — overbought/oversold confirms reversion
+let rsiReversion=0; // -1 to +1, positive = confirms reversion (price should come back down if above)
+if(rs){
+  if(rs>75&&priceAbovePtb)rsiReversion=Math.min((rs-70)/30,1); // Overbought + above PTB → fade
+  else if(rs<25&&!priceAbovePtb)rsiReversion=Math.min((25-rs)/25,1); // Oversold + below PTB → fade
+}
+
+// VOLUME SPIKE DETECTION — big volume in first 30s often means reversal
+// Everyone piled in at once, no buyers/sellers left to push further
+let volumeSpike=false;
+let volumeSpikeRatio=0;
+if(vols.length>=10){
+  const recentVols=vols.slice(-6); // Last ~30s
+  const olderVols=vols.slice(-20,-6); // Previous period
+  if(olderVols.length>=5){
+    const recentAvg=recentVols.reduce((a,b)=>a+b,0)/recentVols.length;
+    const olderAvg=olderVols.reduce((a,b)=>a+b,0)/olderVols.length;
+    volumeSpikeRatio=olderAvg>0?recentAvg/olderAvg:1;
+    volumeSpike=volumeSpikeRatio>2.0; // Volume 2x+ higher than normal
+  }
+}
+
 // POLYMARKET SIGNAL: does market agree or disagree with current price direction?
 let polyAgrees=null; // null=no data, true=agrees, false=disagrees
 let polyUp=null;
@@ -1439,48 +1461,56 @@ if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
 let finalPrediction;
 let strategy='';
 
-if(useReversion&&polyAgrees===false){
-  // BIG spike + market disagrees → STRONG mean reversion signal
-  // Price above PTB but market says Down → bet NO
+// RSI + volume spike can upgrade reversion conditions
+// Lower the bar: if RSI is extreme OR volume spiked, reversion kicks in at smaller gaps
+const rsiExtreme=(rs&&(rs>75||rs<25));
+const reversionBoosted=(rsiExtreme||volumeSpike);
+const useReversionLoose=(priceDiff>25&&isSpike&&reversionBoosted); // $25+ with RSI/vol confirmation
+
+if((useReversion||useReversionLoose)&&polyAgrees===false){
   finalPrediction=!priceAbovePtb;
-  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+' + market disagrees)';
-}else if(useReversion&&polyAgrees===null){
-  // Big spike, market is neutral → lean reversion but weaker
+  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+' + market disagrees'+(rsiExtreme?' + RSI '+rs.toFixed(0):'')+(volumeSpike?' + vol spike '+volumeSpikeRatio.toFixed(1)+'x':'')+')';
+}else if((useReversion||useReversionLoose)&&polyAgrees===null){
   finalPrediction=!priceAbovePtb;
-  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+', market neutral)';
+  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+(rsiExtreme?', RSI '+rs.toFixed(0):'')+(volumeSpike?', vol '+volumeSpikeRatio.toFixed(1)+'x':'')+')';
 }else if(useReversion&&polyAgrees===true){
-  // Big spike but market AGREES → momentum wins, market knows something
   finalPrediction=priceAbovePtb;
   strategy='MOMENTUM (big gap but market confirms)';
 }else if(polyUp&&Math.abs(polyUp-0.5)>0.08){
-  // No spike, but market has a strong opinion (58¢+ or 42¢-)
   finalPrediction=polyUp>0.5;
   strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
 }else if(priceDiff>15&&dominance>0.65){
-  // Steady drift: decent gap + consistently on one side → momentum
   finalPrediction=priceAbovePtb;
   strategy='MOMENTUM (steady $'+priceDiff.toFixed(0)+', '+Math.round(dominance*100)+'% dom)';
 }else{
-  // No clear signal → go with price direction as tiebreaker
   finalPrediction=priceAbovePtb;
   strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+' PTB)';
 }
 
 // CONFIDENCE
 let confidence=50;
-if(useReversion&&polyAgrees===false)confidence+=20; // Strongest signal
+if((useReversion||useReversionLoose)&&polyAgrees===false){
+  confidence+=20;
+  if(rsiExtreme)confidence+=5;
+  if(volumeSpike)confidence+=5;
+}
 else if(polyUp&&Math.abs(polyUp-0.5)>0.08)confidence+=Math.abs(polyUp-0.5)*60;
 else if(priceDiff>15&&dominance>0.65)confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20);
-else confidence+=2; // Low edge
+else confidence+=2;
 const clampedConf=Math.min(confidence,92).toFixed(1);
 
 // Build signal display
 const signals=[];
 signals.push({name:'Gap: $'+priceDiff.toFixed(0)+(priceAbovePtb?' above':' below'),dir:priceAbovePtb,weight:priceDiff/10});
 if(ptbTracker.totalChecks>=3)signals.push({name:'Consistency '+Math.round(dominance*100)+'%',dir:aboveRatio>0.5,weight:dominance*5});
-if(isSpike)signals.push({name:'⚡ Spike detected ('+Math.round(spikeRatio*100)+'%)',dir:!priceAbovePtb,weight:spikeRatio*5});
+if(isSpike)signals.push({name:'⚡ Spike ('+Math.round(spikeRatio*100)+'%)',dir:!priceAbovePtb,weight:spikeRatio*5});
+if(rs){
+  const rsiDir=rs>50;
+  signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1});
+}
+if(volumeSpike)signals.push({name:'📊 Vol Spike '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
 if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
-signals.push({name:'Strategy: '+strategy,dir:finalPrediction,weight:0});
+signals.push({name:'→ '+strategy,dir:finalPrediction,weight:0});
 
 const predSource=strategy;
 
