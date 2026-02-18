@@ -439,33 +439,25 @@ function processChainlinkTick(price, timestamp){
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
 let ptbCaptureScheduled=false;
 
-// Schedule PTB capture for exact slot boundary
+// Schedule PTB capture — just grab the current Chainlink price at slot boundary
 function schedulePtbCapture(){
   if(ptbCaptureScheduled)return;
   const now=Date.now();
-  const slotMs=5*60*1000; // 5 minutes
+  const slotMs=300000;
   const nextSlotMs=Math.ceil(now/slotMs)*slotMs;
   const delay=nextSlotMs-now;
   
   ptbCaptureScheduled=true;
   setTimeout(()=>{
-    // Find tick closest to this exact moment (slot boundary)
-    const slotStartMs=Math.round(Date.now()/300000)*300000;
-    let bestTick=null,bestDist=Infinity;
-    chainlinkTickBuffer.forEach(t=>{
-      const dist=Math.abs(t.ts-slotStartMs);
-      if(dist<bestDist){bestDist=dist;bestTick=t}
-    });
-    const capturedPrice=bestTick?bestTick.price:(latestChainlinkPrice||latestBtcPrice);
+    // Simple: just use whatever Chainlink price we have right now
+    const capturedPrice=latestChainlinkPrice||latestBtcPrice;
     if(capturedPrice&&markets[5]){
       markets[5].priceToBeat=capturedPrice;
-      console.log('⏱️ Timer PTB: $'+capturedPrice.toFixed(2)+(bestTick?' ('+bestDist+'ms from boundary)':' (fallback)'));
+      console.log('⏱️ PTB captured at slot boundary: $'+capturedPrice.toFixed(2));
     }
     ptbCaptureScheduled=false;
-    // Schedule the next one
     setTimeout(schedulePtbCapture,1000);
   },delay);
-  console.log('PTB capture scheduled in '+(delay/1000).toFixed(1)+'s');
 }
 
 function connectPolyWs(){
@@ -498,32 +490,6 @@ function connectPolyWs(){
           chainlinkTickBuffer.push({price:d.payload.value,ts:tickTs});
           if(chainlinkTickBuffer.length>50)chainlinkTickBuffer.shift();
           
-          // Precision PTB capture: use the payload timestamp (from Chainlink source)
-          // instead of Date.now() for more accurate boundary detection
-          const nowMs=tickTs; // Use source timestamp, not our clock
-          const slotMs=300000;
-          const msIntoSlot=nowMs%slotMs;
-          if(msIntoSlot<2000&&markets[5]){
-            const currentSlot=Math.floor(nowMs/slotMs);
-            if(currentSlot!==lastChainlinkPtbSlot){
-              lastChainlinkPtbSlot=currentSlot;
-              // Find the tick closest to the slot boundary (slot start = currentSlot * slotMs)
-              const slotStartMs=currentSlot*slotMs;
-              let bestTick=null,bestDist=Infinity;
-              chainlinkTickBuffer.forEach(t=>{
-                const dist=Math.abs(t.ts-slotStartMs);
-                if(dist<bestDist){bestDist=dist;bestTick=t}
-              });
-              const ptbPrice=bestTick?bestTick.price:d.payload.value;
-              markets[5].priceToBeat=ptbPrice;
-              console.log('🎯 PTB from closest tick: $'+ptbPrice.toFixed(2)+' ('+bestDist+'ms from boundary, using source timestamp)');
-            }
-          }
-          // Also capture ticks just BEFORE the boundary (last 500ms of slot)
-          const msBeforeEnd=slotMs-msIntoSlot;
-          if(msBeforeEnd<500){
-            window._lastPreBoundaryPrice=d.payload.value;
-          }
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
           if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
         }
@@ -1601,20 +1567,13 @@ if(priceHistory.length>500)priceHistory.shift();
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // Set PTB from Chainlink (same source as Polymarket) if available, else Binance
+    // Set PTB from Chainlink price (same source as Polymarket)
     m.priceToBeat=latestChainlinkPrice||price;
     // Try to get exact PTB from Polymarket API
     if(tf===5){
       lastPtbFetchSlot=null;
       ptbFetchAttempts=0;
       tryFetchPTB();
-      // Also re-capture PTB from Chainlink 1-2 seconds after slot change
-      // in case the first tick was stale
-      setTimeout(()=>{
-        if(latestChainlinkPrice&&markets[5]&&!lastPtbFetchSlot){
-          markets[5].priceToBeat=latestChainlinkPrice;
-        }
-      },1500);
     }
   }
 });
