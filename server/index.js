@@ -80,6 +80,25 @@ app.get('/api/me', requireAuth, (req, res) => {
   });
 });
 
+// ─── Server-side PTB storage (persists across devices) ───
+let serverPtb = { price: null, slot: null, timestamp: null };
+
+app.post('/api/ptb', requireAuth, (req, res) => {
+  const { price, slot } = req.body;
+  if (price && price > 50000 && price < 200000 && slot) {
+    serverPtb = { price, slot, timestamp: Date.now() };
+  }
+  res.json({ ok: true });
+});
+
+app.get('/api/ptb', requireAuth, (req, res) => {
+  const currentSlot = Math.floor(Date.now() / 300000);
+  if (serverPtb.price && serverPtb.slot === currentSlot) {
+    return res.json({ price: serverPtb.price, slot: serverPtb.slot });
+  }
+  res.json({ price: null });
+});
+
 // Logout
 app.post('/api/logout', (req, res) => {
   res.clearCookie('session');
@@ -103,35 +122,26 @@ app.get('/api/polymarket-ptb', async (req, res) => {
         
         const evt = data[0];
         const mkt = evt.markets && evt.markets[0];
-        const fullDump = JSON.stringify(evt);
         
-        // Search for BTC price range numbers in entire response
-        const allNums = fullDump.match(/\d{4,5}\.\d{1,8}/g) || [];
-        const btcPrices = allNums
-          .map(n => parseFloat(n))
-          .filter(n => n > 50000 && n < 200000);
-        
-        // Get odds
-        let upPrice = null, downPrice = null;
-        if (mkt) {
-          try {
-            const prices = JSON.parse(mkt.outcomePrices || '[]');
-            const outcomes = JSON.parse(mkt.outcomes || '[]');
-            outcomes.forEach((o, i) => {
-              if (o.toLowerCase().includes('up')) upPrice = parseFloat(prices[i]);
-              if (o.toLowerCase().includes('down')) downPrice = parseFloat(prices[i]);
-            });
-          } catch(e) {}
-        }
-        
+        // Return ALL fields so we can find PTB
         return res.json({
-          slug, timestamp: ts,
-          ptb: btcPrices.length > 0 ? btcPrices[0] : null,
-          btcPricesFound: btcPrices,
-          upPrice, downPrice,
-          marketFields: mkt ? Object.keys(mkt) : [],
-          startPrice: mkt?.startPrice || null,
-          fullDump: fullDump.substring(0, 3000)
+          slug,
+          timestamp: ts,
+          eventTitle: evt.title,
+          eventDescription: evt.description,
+          marketQuestion: mkt?.question,
+          marketDescription: mkt?.description,
+          startPrice: mkt?.startPrice,
+          endPrice: mkt?.endPrice,
+          outcomePrices: mkt?.outcomePrices,
+          outcomes: mkt?.outcomes,
+          // Dump every field name and value
+          allMarketFields: mkt ? Object.fromEntries(
+            Object.entries(mkt).map(([k, v]) => [k, typeof v === 'string' && v.length > 200 ? v.substring(0, 200) + '...' : v])
+          ) : null,
+          allEventFields: Object.fromEntries(
+            Object.entries(evt).filter(([k]) => k !== 'markets').map(([k, v]) => [k, typeof v === 'string' && v.length > 200 ? v.substring(0, 200) + '...' : v])
+          )
         });
       } catch(ex) { continue; }
     }
