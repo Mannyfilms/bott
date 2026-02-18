@@ -74,53 +74,94 @@ app.post('/api/logout', (req, res) => {
 });
 
 // ─── Polymarket PTB Proxy ───
-// Fetches the exact Price to Beat from Polymarket's Gamma API
-// Avoids CORS issues by proxying through our server
+// Scrapes the actual PTB from the Polymarket website
 app.get('/api/polymarket-ptb', async (req, res) => {
   try {
     const nowSec = Math.floor(Date.now() / 1000);
     const windowTs = nowSec - (nowSec % 300);
     
-    // Try current window, then previous
     for (const ts of [windowTs, windowTs - 300]) {
       const slug = 'btc-updown-5m-' + ts;
+      const url = 'https://polymarket.com/event/' + slug;
+      
       try {
-        const resp = await fetch('https://gamma-api.polymarket.com/events?slug=' + slug);
+        // Fetch the actual Polymarket page
+        const resp = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+          }
+        });
         if (!resp.ok) continue;
-        const data = await resp.json();
-        if (data && data.length > 0) {
-          const evt = data[0];
-          // Log full response to debug
-          const mkt = evt.markets && evt.markets[0];
-          
-          // Try every possible field that might contain PTB
-          const fields = {
-            startPrice: mkt?.startPrice,
-            description: mkt?.description,
-            question: mkt?.question,
-            title: evt?.title,
-            customJsonData: mkt?.customJsonData
-          };
-          
-          // Check for price in description/question/title
-          const allText = [mkt?.description, mkt?.question, evt?.title, evt?.description, 
-                          JSON.stringify(mkt?.customJsonData)].filter(Boolean).join(' ');
-          const priceMatch = allText.match(/\$([0-9,]+\.\d+)/);
-          
+        const html = await resp.text();
+        
+        // Look for PTB in the page HTML
+        // Polymarket shows it as "PRICE TO BEAT" followed by "$XX,XXX.XX"
+        // Try multiple patterns
+        const patterns = [
+          /PRICE\s*TO\s*BEAT[^$]*\$([0-9,]+\.\d{1,2})/i,
+          /price.?to.?beat[^$]*\$([0-9,]+\.\d{1,2})/i,
+          /\"startPrice\":\s*\"?([0-9.]+)/i,
+          /\"priceToBeat\":\s*\"?([0-9.]+)/i,
+          /target[^$]*\$([0-9,]+\.\d{1,2})/i,
+        ];
+        
+        let ptb = null;
+        for (const pat of patterns) {
+          const match = html.match(pat);
+          if (match) {
+            const val = parseFloat(match[1].replace(/,/g, ''));
+            if (val > 50000 && val < 200000) { // BTC price range
+              ptb = val;
+              break;
+            }
+          }
+        }
+        
+        // Also try to find ALL dollar amounts in BTC range from the page
+        if (!ptb) {
+          const allPrices = html.match(/\$([0-9,]{5,6}\.\d{1,2})/g) || [];
+          for (const p of allPrices) {
+            const val = parseFloat(p.replace(/[$,]/g, ''));
+            if (val > 50000 && val < 200000) {
+              ptb = val;
+              break;
+            }
+          }
+        }
+        
+        // Also try the gamma API as backup
+        let upPrice = null, downPrice = null;
+        try {
+          const apiResp = await fetch('https://gamma-api.polymarket.com/events?slug=' + slug);
+          if (apiResp.ok) {
+            const data = await apiResp.json();
+            if (data && data.length > 0) {
+              const mkt = data[0].markets && data[0].markets[0];
+              if (mkt) {
+                try {
+                  const prices = JSON.parse(mkt.outcomePrices || '[]');
+                  const outcomes = JSON.parse(mkt.outcomes || '[]');
+                  outcomes.forEach((o, i) => {
+                    if (o.toLowerCase().includes('up')) upPrice = parseFloat(prices[i]);
+                    if (o.toLowerCase().includes('down')) downPrice = parseFloat(prices[i]);
+                  });
+                } catch(e) {}
+              }
+            }
+          }
+        } catch(e) {}
+        
+        if (ptb || upPrice) {
           return res.json({
-            slug,
-            timestamp: ts,
-            ptb: priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null,
-            startPrice: mkt?.startPrice || null,
-            fields,
-            rawTitle: evt?.title,
-            rawQuestion: mkt?.question,
-            rawDesc: mkt?.description?.substring(0, 500)
+            slug, timestamp: ts, ptb, upPrice, downPrice,
+            source: ptb ? 'website-scrape' : 'api-only'
           });
         }
-      } catch (ex) { continue; }
+      } catch(ex) { continue; }
     }
-    res.json({ ptb: null, error: 'No market found' });
+    
+    res.json({ ptb: null, error: 'Could not scrape PTB from Polymarket' });
   } catch (e) {
     res.json({ ptb: null, error: e.message });
   }
