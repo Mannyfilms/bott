@@ -105,69 +105,61 @@ app.post('/api/logout', (req, res) => {
   return res.json({ success: true });
 });
 
-// ─── Smart Whale Tracker: Find & follow the best BTC 5-min trader ───
-let topTraderCache = { wallet: null, username: null, winRate: 0, lastDiscovery: 0 };
+// ─── Smart Whale Tracker: Find & follow best BTC 5-min traders using public APIs ───
+let topTradersCache = { wallets: [], lastDiscovery: 0 }; // wallet -> {wins, username}
 let whaleCache = { trades: null, lastFetch: 0 };
 
-// Discover the best performing BTC 5-min trader from recent markets
-async function discoverTopTrader() {
-  // Only rediscover every 5 minutes
-  if (topTraderCache.wallet && Date.now() - topTraderCache.lastDiscovery < 300000) {
-    return topTraderCache;
+// Discover top performers from recently resolved BTC 5-min markets
+async function discoverTopTraders() {
+  // Rediscover every 5 minutes
+  if (topTradersCache.wallets.length > 0 && Date.now() - topTradersCache.lastDiscovery < 300000) {
+    return topTradersCache;
   }
   
   try {
     const nowSec = Math.floor(Date.now() / 1000);
-    const traderStats = {}; // wallet -> {wins, losses, totalSize, username}
+    const traderStats = {}; // wallet -> {wins, losses, username}
     
-    // Look at the last 6 resolved 5-min BTC markets (30 min of history)
+    // Look at last 6 resolved BTC 5-min markets
     for (let i = 2; i <= 7; i++) {
       const slotTs = nowSec - (nowSec % 300) - (i * 300);
       const slug = 'btc-updown-5m-' + slotTs;
       
       try {
-        // Get the market's condition_id from Gamma
+        // Get market info from Gamma
         const evtResp = await fetch('https://gamma-api.polymarket.com/events?slug=' + slug);
         if (!evtResp.ok) continue;
         const evtData = await evtResp.json();
-        if (!evtData || !evtData.length || !evtData[0].markets || !evtData[0].markets[0]) continue;
+        if (!evtData?.length || !evtData[0].markets?.[0]) continue;
         
         const mkt = evtData[0].markets[0];
         const conditionId = mkt.conditionId;
         const outcomes = JSON.parse(mkt.outcomes || '[]');
         const outcomePrices = JSON.parse(mkt.outcomePrices || '[]');
         
-        // Determine which outcome won (price near 1.0 = winner)
+        // Determine winner (resolved market has one outcome near $1)
         let winner = null;
         outcomes.forEach((o, idx) => {
-          const p = parseFloat(outcomePrices[idx] || 0);
-          if (p > 0.9) winner = o; // "Up" or "Down"
+          if (parseFloat(outcomePrices[idx] || 0) > 0.9) winner = o;
         });
         if (!winner) continue;
         
-        // Get top traders for this resolved market
-        // Use the token_id to find trades
-        const tokens = mkt.clobTokenIds ? JSON.parse(mkt.clobTokenIds) : [];
-        if (tokens.length === 0) continue;
+        // Use /holders to see who held positions in this market
+        const holdersResp = await fetch('https://data-api.polymarket.com/holders?market=' + conditionId + '&limit=50&sizeThreshold=5');
+        if (!holdersResp.ok) continue;
+        const holders = await holdersResp.json();
+        if (!Array.isArray(holders)) continue;
         
-        // Get recent trades for this market from CLOB
-        const tradesResp = await fetch('https://clob.polymarket.com/trades?asset_id=' + tokens[0] + '&limit=50');
-        if (!tradesResp.ok) continue;
-        const trades = await tradesResp.json();
-        
-        if (!Array.isArray(trades)) continue;
-        
-        trades.forEach(trade => {
-          const wallet = trade.maker_address || trade.taker_address;
+        holders.forEach(h => {
+          const wallet = h.proxyWallet;
           if (!wallet) return;
           
-          // Did this trade bet on the winner?
-          const betUp = (trade.side === 'BUY' && trade.outcome === 'Up') || (trade.side === 'SELL' && trade.outcome === 'Down');
-          const betDown = !betUp;
-          const wasRight = (winner === 'Up' && betUp) || (winner === 'Down' && betDown);
-          const size = parseFloat(trade.size || trade.matchSize || 0);
+          // Did they hold the winning outcome?
+          const wasRight = h.outcome === winner;
+          const size = parseFloat(h.size || 0);
+          if (size < 5) return; // Skip tiny positions
           
-          if (!traderStats[wallet]) traderStats[wallet] = { wins: 0, losses: 0, totalSize: 0, username: trade.name || trade.pseudonym || wallet.slice(0,8) };
+          if (!traderStats[wallet]) traderStats[wallet] = { wins: 0, losses: 0, totalSize: 0, username: h.name || h.pseudonym || wallet.slice(0,10) };
           if (wasRight) traderStats[wallet].wins++;
           else traderStats[wallet].losses++;
           traderStats[wallet].totalSize += size;
@@ -175,29 +167,36 @@ async function discoverTopTrader() {
       } catch(e) { continue; }
     }
     
-    // Find the trader with the best win rate (min 3 trades)
-    let bestWallet = null, bestRate = 0, bestUsername = '';
-    Object.entries(traderStats).forEach(([wallet, stats]) => {
-      const total = stats.wins + stats.losses;
-      if (total >= 3) {
-        const rate = stats.wins / total;
-        if (rate > bestRate || (rate === bestRate && stats.totalSize > (traderStats[bestWallet]?.totalSize || 0))) {
-          bestRate = rate;
-          bestWallet = wallet;
-          bestUsername = stats.username;
-        }
-      }
-    });
+    // Rank traders: best win rate with minimum 3 markets
+    const ranked = Object.entries(traderStats)
+      .filter(([_, s]) => s.wins + s.losses >= 3)
+      .sort((a, b) => {
+        const rateA = a[1].wins / (a[1].wins + a[1].losses);
+        const rateB = b[1].wins / (b[1].wins + b[1].losses);
+        if (rateB !== rateA) return rateB - rateA;
+        return b[1].totalSize - a[1].totalSize; // Tiebreak by volume
+      })
+      .slice(0, 5) // Top 5 traders
+      .map(([wallet, stats]) => ({
+        wallet,
+        username: stats.username,
+        winRate: stats.wins / (stats.wins + stats.losses),
+        wins: stats.wins,
+        losses: stats.losses,
+        totalSize: stats.totalSize
+      }));
     
-    if (bestWallet) {
-      topTraderCache = { wallet: bestWallet, username: bestUsername, winRate: bestRate, lastDiscovery: Date.now() };
-      console.log('🏆 Top trader: ' + bestUsername + ' (' + (bestRate * 100).toFixed(0) + '% win rate)');
+    if (ranked.length > 0) {
+      topTradersCache = { wallets: ranked, lastDiscovery: Date.now() };
+      console.log('🏆 Top traders discovered: ' + ranked.map(t => t.username + ' (' + (t.winRate * 100).toFixed(0) + '%)').join(', '));
+    } else {
+      console.log('🔍 No qualifying traders found yet (need 3+ markets)');
     }
     
-    return topTraderCache;
+    return topTradersCache;
   } catch(e) {
     console.log('Trader discovery error:', e.message);
-    return topTraderCache;
+    return topTradersCache;
   }
 }
 
@@ -208,61 +207,115 @@ app.get('/api/whale-trades', async (req, res) => {
       return res.json(whaleCache.trades);
     }
     
-    // Find the best trader
-    const topTrader = await discoverTopTrader();
+    // Find top traders
+    const topTraders = await discoverTopTraders();
     
+    if (topTraders.wallets.length === 0) {
+      const result = { whaleBet: null, topTrader: 'Discovering...', winRate: 0, totalTradesFound: 0 };
+      whaleCache = { trades: result, lastFetch: Date.now() };
+      return res.json(result);
+    }
+    
+    // Get current market's conditionId
     const nowSec = Math.floor(Date.now() / 1000);
     const currentSlotTs = nowSec - (nowSec % 300);
     const currentSlug = 'btc-updown-5m-' + currentSlotTs;
     
-    let whaleBet = null;
-    let latestTrade = null;
-    let allTrades = [];
+    let currentConditionId = null;
+    try {
+      const evtResp = await fetch('https://gamma-api.polymarket.com/events?slug=' + currentSlug);
+      if (evtResp.ok) {
+        const evtData = await evtResp.json();
+        if (evtData?.length && evtData[0].markets?.[0]) {
+          currentConditionId = evtData[0].markets[0].conditionId;
+        }
+      }
+    } catch(e) {}
     
-    if (topTrader.wallet) {
+    let yesVotes = 0, noVotes = 0;
+    let voterDetails = [];
+    
+    if (currentConditionId) {
+      // Check current market holders to see if any top traders have positions
       try {
-        const resp = await fetch('https://data-api.polymarket.com/activity?address=' + topTrader.wallet + '&limit=10');
-        if (resp.ok) {
-          const activity = await resp.json();
-          
-          // Filter for current BTC 5-min slot
-          const slotTrades = activity.filter(t => 
-            t.eventSlug && t.eventSlug === currentSlug
-          );
-          
-          slotTrades.forEach(t => {
-            const direction = t.side === 'BUY' 
-              ? (t.outcome === 'Up' ? 'YES' : 'NO')
-              : (t.outcome === 'Up' ? 'NO' : 'YES');
+        const holdersResp = await fetch('https://data-api.polymarket.com/holders?market=' + currentConditionId + '&limit=100');
+        if (holdersResp.ok) {
+          const holders = await holdersResp.json();
+          if (Array.isArray(holders)) {
+            // Match holders against our top traders
+            const topWalletSet = new Set(topTraders.wallets.map(t => t.wallet));
             
-            allTrades.push({
-              username: topTrader.username,
-              side: t.side,
-              outcome: t.outcome,
-              direction,
-              price: t.price,
-              size: parseFloat(t.usdcSize || t.size || 0),
-              timestamp: t.timestamp,
-              slug: t.eventSlug
+            holders.forEach(h => {
+              if (topWalletSet.has(h.proxyWallet)) {
+                const trader = topTraders.wallets.find(t => t.wallet === h.proxyWallet);
+                const size = parseFloat(h.size || 0);
+                const direction = h.outcome === 'Up' ? 'YES' : 'NO';
+                // Weight by win rate and position size
+                const weight = (trader.winRate || 0.5) * size;
+                
+                if (direction === 'YES') yesVotes += weight;
+                else noVotes += weight;
+                
+                voterDetails.push({
+                  username: trader.username,
+                  winRate: trader.winRate,
+                  direction,
+                  size,
+                  outcome: h.outcome
+                });
+              }
             });
-          });
-          
-          if (allTrades.length > 0) {
-            latestTrade = allTrades[0];
-            whaleBet = latestTrade.direction;
           }
         }
       } catch(e) {}
     }
     
+    // Also check via /activity for top traders who traded this slot
+    // (catches trades that /holders might not show yet)
+    for (const trader of topTraders.wallets.slice(0, 3)) { // Top 3 only to limit API calls
+      try {
+        const resp = await fetch('https://data-api.polymarket.com/activity?address=' + trader.wallet + '&limit=5');
+        if (!resp.ok) continue;
+        const activity = await resp.json();
+        
+        const slotTrades = activity.filter(t => t.eventSlug === currentSlug && t.type === 'TRADE');
+        slotTrades.forEach(t => {
+          const direction = t.side === 'BUY'
+            ? (t.outcome === 'Up' ? 'YES' : 'NO')
+            : (t.outcome === 'Up' ? 'NO' : 'YES');
+          const size = parseFloat(t.usdcSize || t.size || 0);
+          const weight = (trader.winRate || 0.5) * size;
+          
+          // Only add if not already counted from /holders
+          if (!voterDetails.find(v => v.username === trader.username)) {
+            if (direction === 'YES') yesVotes += weight;
+            else noVotes += weight;
+            
+            voterDetails.push({
+              username: trader.username,
+              winRate: trader.winRate,
+              direction,
+              size,
+              outcome: t.outcome
+            });
+          }
+        });
+      } catch(e) { continue; }
+    }
+    
+    const whaleBet = (yesVotes > 0 || noVotes > 0) ? (yesVotes > noVotes ? 'YES' : 'NO') : null;
+    const bestTrader = topTraders.wallets[0];
+    
     const result = {
       whaleBet,
-      topTrader: topTrader.username || 'Searching...',
-      winRate: topTrader.winRate,
-      latestTrade,
-      recentTrades: allTrades,
-      totalTradesFound: allTrades.length,
-      confidence: topTrader.winRate
+      topTrader: bestTrader.username,
+      winRate: bestTrader.winRate,
+      topTraders: topTraders.wallets.map(t => ({ username: t.username, winRate: t.winRate, wins: t.wins, losses: t.losses })),
+      voters: voterDetails,
+      yesWeight: yesVotes,
+      noWeight: noVotes,
+      totalTradesFound: voterDetails.length,
+      confidence: (yesVotes + noVotes) > 0 ? Math.abs(yesVotes - noVotes) / (yesVotes + noVotes) : 0
     };
     
     whaleCache = { trades: result, lastFetch: Date.now() };
