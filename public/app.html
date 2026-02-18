@@ -535,12 +535,23 @@ connectPolyWs();
 connectBtcWs();
 
 // ═══ POLYMARKET ODDS (the market's own prediction) ═══
-let polymarketOdds={upPrice:null,downPrice:null,lastFetch:0};
+let polymarketOdds={upPrice:null,downPrice:null,lastFetch:0,prevUpPrice:null,slotStartUpPrice:null,lastSlot:0};
 async function fetchPolymarketOdds(){
   try{
     const r=await fetch('/api/polymarket-odds');
     const data=await r.json();
-    if(data.upPrice)polymarketOdds={upPrice:data.upPrice,downPrice:data.downPrice,lastFetch:Date.now()};
+    if(data.upPrice){
+      const currentSlot=Math.floor(Date.now()/300000);
+      // Save the first odds reading of each new slot
+      if(currentSlot!==polymarketOdds.lastSlot){
+        polymarketOdds.slotStartUpPrice=data.upPrice;
+        polymarketOdds.lastSlot=currentSlot;
+      }
+      polymarketOdds.prevUpPrice=polymarketOdds.slotStartUpPrice;
+      polymarketOdds.upPrice=data.upPrice;
+      polymarketOdds.downPrice=data.downPrice;
+      polymarketOdds.lastFetch=Date.now();
+    }
   }catch(e){}
 }
 // Fetch every 10 seconds — this is our most valuable signal
@@ -1339,9 +1350,7 @@ if(Object.keys(signalMultipliers).length>0&&sigs.length>3){
 const rawConf=Math.abs(sc)/tw*100;
 // Honest confidence: 50% = coin flip, 100% = every signal agrees
 const conf=Math.min(50+rawConf/2,97);
-// Skip if confidence is too low (near coin flip)
-const shouldSkip=conf<58;
-return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:cp||detectPat(jp),skip:shouldSkip,features:feat}}
+return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:cp||detectPat(jp),skip:false,features:feat}}
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){
@@ -1366,16 +1375,44 @@ const shouldLock=timeInSlot>=lockAfter;
 let finalPrediction;
 let predSource='';
 const priceAbovePtb=price>ptb;
+const priceDiff=Math.abs(price-ptb);
 
-// Collect signals
+// Collect signals with SCALED weights (not just binary)
 const signals=[];
+
+// 1. POLYMARKET ODDS — strongest signal, scale by how far from 50¢
 if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  signals.push({name:'Polymarket',dir:polymarketOdds.upPrice>0.5,weight:3});
+  const up=polymarketOdds.upPrice;
+  const edge=Math.abs(up-0.5); // 0 = no edge, 0.3 = strong edge
+  // Weight scales: 51¢ → 3.2, 55¢ → 4.5, 60¢ → 6, 65¢ → 7.5, 70¢+ → 9+
+  const scaledWeight=3+edge*20;
+  signals.push({name:'Polymarket ('+Math.round(up*100)+'¢)',dir:up>0.5,weight:scaledWeight});
 }
+
+// 2. WHALE/TOP TRADER — only if they actually have a position this slot
 if(whaleBet.direction&&(Date.now()-whaleBet.lastFetch)<120000){
-  signals.push({name:'🐋 Whale',dir:whaleBet.direction==='YES',weight:4}); // Whale gets highest weight
+  // Scale by their win rate: 50% → 1, 70% → 3, 90% → 5
+  const wr=whaleBet.winRate||0.5;
+  const whaleWeight=1+Math.max(0,(wr-0.5))*20;
+  signals.push({name:'🐋 Top Trader ('+Math.round(wr*100)+'%)',dir:whaleBet.direction==='YES',weight:whaleWeight});
 }
-signals.push({name:'Price vs PTB',dir:priceAbovePtb,weight:2});
+
+// 3. PRICE vs PTB — scale by gap size (from backtest: >$50 = 81%, >$100 = 90%+)
+{
+  // $10 gap → weight 1, $50 gap → 4, $100 gap → 6, $200+ → 8
+  const gapWeight=Math.min(priceDiff/25,8);
+  if(priceDiff>5){ // Only count if gap is meaningful (>$5)
+    signals.push({name:'Price vs PTB ($'+priceDiff.toFixed(0)+')',dir:priceAbovePtb,weight:gapWeight});
+  }
+}
+
+// 4. POLYMARKET ODDS MOMENTUM — if odds shifted since slot start, that's huge
+if(polymarketOdds.upPrice&&polymarketOdds.prevUpPrice){
+  const shift=polymarketOdds.upPrice-polymarketOdds.prevUpPrice;
+  if(Math.abs(shift)>0.03){ // Odds moved 3¢+
+    signals.push({name:'Odds Shift ('+(shift>0?'+':'')+Math.round(shift*100)+'¢)',dir:shift>0,weight:Math.min(Math.abs(shift)*30,6)});
+  }
+}
 
 // Weighted vote
 let yesWeight=0,noWeight=0;
@@ -1384,15 +1421,30 @@ signals.forEach(s=>{
   else noWeight+=s.weight;
 });
 finalPrediction=yesWeight>=noWeight;
-predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name).join(' | ');
+predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name+'('+s.weight.toFixed(1)+')').join(' | ');
+
+// CONFIDENCE based on real factors, not 25 noisy signals
+// How lopsided is the vote? And how strong are the signals?
+const totalWeight=yesWeight+noWeight;
+const voteMargin=totalWeight>0?Math.abs(yesWeight-noWeight)/totalWeight:0;
+// Combine: vote margin (0-1) + Polymarket edge (0-0.3) + gap size factor
+const polyEdge=polymarketOdds.upPrice?Math.abs(polymarketOdds.upPrice-0.5):0;
+const gapFactor=Math.min(priceDiff/200,0.3); // $200 gap maxes this out
+const realConfidence=50+((voteMargin*0.5+polyEdge*0.3+gapFactor*0.2)*100);
+const clampedConf=Math.min(realConfidence,92).toFixed(1);
+
+// SKIP LOGIC — much more aggressive
+// Skip if: total signal weight is too low, OR vote is too close, OR Polymarket is near 50/50
+const shouldSkipNew=voteMargin<0.15||(polyEdge<0.03&&priceDiff<20)||totalWeight<3;
+
 let displayWillBeat=finalPrediction;
-let displayConf=pred.confidence;
+let displayConf=clampedConf;
 let lockStatus='';
 
 if(!predictionLock.locked){
   // Not locked yet — check if we should lock
   if(shouldLock){
-    if(pred.skip){ // Low confidence — skip this prediction
+    if(shouldSkipNew){ // Low confidence — skip this prediction
       predictionLock.locked=true;
       predictionLock.direction=pred.willBeat;
       predictionLock.lockPrice=price;
@@ -1412,14 +1464,16 @@ if(!predictionLock.locked){
       displaySignals(pred.signals);updateCountdown();
       return;
     }
-    // LOCK IT — using Polymarket odds (or price vs PTB fallback)
+    // LOCK IT — using weighted vote of real signals
     predictionLock.locked=true;
     predictionLock.direction=finalPrediction;
     predictionLock.lockPrice=price;
     predictionLock.lockTime=Date.now();
     predictionLock.lockPtb=ptb;
     displayWillBeat=finalPrediction;
-    lockStatus=' 🔒 LOCKED ('+predSource+')';
+    lockStatus=' 🔒 LOCKED';
+    console.log('🔒 PREDICTION LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | Conf: '+clampedConf+'% | '+predSource);
+    console.log('   YES weight: '+yesWeight.toFixed(1)+' | NO weight: '+noWeight.toFixed(1)+' | Gap: $'+priceDiff.toFixed(0)+' | Skip: '+shouldSkipNew);
   }else{
     // Still analyzing — don't show any prediction yet, just "Analyzing..."
     lockStatus='analyzing';
