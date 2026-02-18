@@ -1564,7 +1564,8 @@ const price=latestBtcPrice||priceHistory.length?priceHistory[priceHistory.length
 const now=new Date();
 [5,15,60].forEach(tf=>{
   markets[tf].currentSlot=getSlot(tf,now);
-  if(!markets[tf].priceToBeat&&latestChainlinkPrice)markets[tf].priceToBeat=latestChainlinkPrice;
+  // Don't set PTB on startup — wait for Chainlink boundary capture
+  // PTB will be set when the next slot boundary is detected by the WebSocket handler
 });
 document.getElementById('status').textContent='Running — 200+ data points loaded';
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
