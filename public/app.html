@@ -1302,11 +1302,14 @@ if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
-const lockAfter=30; // Lock after 30 seconds (gives 4.5 min to bet)
-// Smart lock: lock early if consensus is high (3+ top strategies agree after 20s)
+const lockAfter=30;
 const earlyLockReady=timeInSlot>=20&&pred.signals&&pred.signals.some(s=>s.name.includes('Consensus')&&s.name.includes('3'));
 const shouldLock=timeInSlot>=lockAfter||earlyLockReady;
-let displayWillBeat=pred.willBeat;
+
+// CORE RULE: if price is above PTB, predict YES. If below, predict NO.
+// This is the simplest and most reliable signal on 5-min timeframes.
+const priceVsPtb=price>ptb;
+let displayWillBeat=priceVsPtb;
 let displayConf=pred.confidence;
 let lockStatus='';
 
@@ -1333,13 +1336,13 @@ if(!predictionLock.locked){
       displaySignals(pred.signals);updateCountdown();
       return;
     }
-    // LOCK IT — we have an edge
+    // LOCK IT — price vs PTB is the primary signal
     predictionLock.locked=true;
-    predictionLock.direction=pred.willBeat;
+    predictionLock.direction=priceVsPtb;
     predictionLock.lockPrice=price;
     predictionLock.lockTime=Date.now();
     predictionLock.lockPtb=ptb;
-    displayWillBeat=pred.willBeat;
+    displayWillBeat=priceVsPtb;
     lockStatus=' 🔒 LOCKED';
   }else{
     // Still analyzing — don't show any prediction yet, just "Analyzing..."
