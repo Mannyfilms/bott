@@ -999,16 +999,13 @@ if(ribbon){const w=1.5*trendMult;const adj=applyLearned('EMARibbon',w);if(ribbon
 
 // 3. RSI with divergence
 const rs=rsi(jp);
-if(rs){const w=1.2;let s='NEUTRAL';if(rs<25){sc+=w*2;s='STRONG BULLISH'}else if(rs>75){sc-=w*2;s='STRONG BEARISH'}else if(rs<40){sc+=w*.7;s='BULLISH'}else if(rs>60){sc-=w*.7;s='BEARISH'}tw+=w;sigs.push({name:'RSI ('+rs.toFixed(1)+')',signal:s,strength:w})}
+if(rs){const w=1.5;let s='NEUTRAL';if(rs>50){sc+=w;s='BULLISH (momentum)'}else{sc-=w;s='BEARISH (momentum)'}tw+=w;sigs.push({name:'RSI ('+rs.toFixed(1)+')',signal:s,strength:w})}
 
 // 4. Bollinger Bands squeeze/expansion
 const b=bb(jp);
-if(b){const w=1;const pos=(cur-b.lower)/(b.upper-b.lower);const squeeze=b.bw<1;
-if(squeeze){sigs.push({name:'BB Squeeze',signal:'BREAKOUT SOON',strength:w*.5})}
-else if(pos<.15){sc+=w*1.5;sigs.push({name:'Bollinger',signal:'STRONG BULLISH',strength:w})}
-else if(pos>.85){sc-=w*1.5;sigs.push({name:'Bollinger',signal:'STRONG BEARISH',strength:w})}
-else if(pos<.35){sc+=w*.5;sigs.push({name:'Bollinger',signal:'BULLISH',strength:w})}
-else if(pos>.65){sc-=w*.5;sigs.push({name:'Bollinger',signal:'BEARISH',strength:w})}
+if(b){const w=1.5;
+if(cur>b.mid){sc+=w;sigs.push({name:'Bollinger',signal:'ABOVE MID → BULLISH',strength:w})}
+else{sc-=w;sigs.push({name:'Bollinger',signal:'BELOW MID → BEARISH',strength:w})}
 tw+=w}
 
 // 5. MACD
@@ -1017,7 +1014,7 @@ if(mc2){const w=1;sc+=mc2.macd>0?w:-w;tw+=w;sigs.push({name:'MACD',signal:mc2.si
 
 // 6. Williams %R (oversold/overbought)
 const wr=williamsR(jp);
-if(wr!==null){const w=1;if(wr>-20){sc-=w;sigs.push({name:'Williams %R',signal:'OVERBOUGHT',strength:w})}else if(wr<-80){sc+=w;sigs.push({name:'Williams %R',signal:'OVERSOLD',strength:w})}tw+=w*0.5}
+// 6. Williams %R — REMOVED (backtest: 26.4% accuracy — anti-predictive)
 
 // 7. ADX (trend strength)
 const adxVal=adx(jp);
@@ -1025,11 +1022,11 @@ if(adxVal){const w=1;if(adxVal.adx>25){if(adxVal.pDI>adxVal.nDI){sc+=w*1.5;sigs.
 
 // 8. Mean Reversion (★ boosted in ranging markets)
 const mr=meanReversion(jp);
-if(mr){const w=1.5*revertMult;if(mr.zscore>1.5){sc-=w;sigs.push({name:'Mean Reversion',signal:'OVERBOUGHT (z:'+mr.zscore.toFixed(1)+')',strength:w})}else if(mr.zscore<-1.5){sc+=w;sigs.push({name:'Mean Reversion',signal:'OVERSOLD (z:'+mr.zscore.toFixed(1)+')',strength:w})}tw+=w*0.5}
+// 8. Mean Reversion — REMOVED (backtest: 21.9% accuracy — worst strategy)
 
 // 9. Rate of Change (★ boosted in trending markets)
 const roc1=roc(jp,5),roc2=roc(jp,15),roc3=roc(jp,30);
-if(roc1!==null&&roc2!==null){const w=1.2*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
+if(roc1!==null&&roc2!==null){const w=3*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
 
 // 10. OBV — REMOVED (adds noise on 5-min timeframes)
 
@@ -1046,8 +1043,8 @@ if(cp){const w=1.2;if(cp.signal==='BULLISH')sc+=w*cp.strength;else if(cp.signal=
 
 // 14. Fear & Greed — REMOVED (updates daily, useless for 5-min)
 
-// 15. Funding Rate (contrarian)
-if(Math.abs(externalData.fundingRate)>0.01){const w=1.5;if(externalData.fundingRate>0.03){sc-=w;sigs.push({name:'Funding Rate',signal:'HIGH → BEARISH',strength:w})}else if(externalData.fundingRate<-0.01){sc+=w;sigs.push({name:'Funding Rate',signal:'NEGATIVE → BULLISH',strength:w})}tw+=w}
+// 15. Funding Rate (momentum — contrarian loses on 5-min)
+if(Math.abs(externalData.fundingRate)>0.01){const w=1;if(externalData.fundingRate>0.03){sc+=w;sigs.push({name:'Funding Rate',signal:'HIGH → BULLISH momentum',strength:w})}else if(externalData.fundingRate<-0.01){sc-=w;sigs.push({name:'Funding Rate',signal:'NEGATIVE → BEARISH momentum',strength:w})}tw+=w}
 
 // 16. ORDER BOOK IMBALANCE (★ highest impact for 5-min)
 if(orderBookData.bidTotal>0){
@@ -1092,18 +1089,18 @@ if(tradeFlowData.buyVolume>0){
   else if(tradeFlowData.largeSells>tradeFlowData.largeBuys+2){sc-=1.5;sigs.push({name:'Large Trades',signal:tradeFlowData.largeSells+' big sells vs '+tradeFlowData.largeBuys+' buys',strength:1.5})}
 }
 
-// 19. LONG/SHORT RATIO (contrarian)
+// 19. LONG/SHORT RATIO (momentum following — backtest shows contrarian loses)
 if(longShortRatio>0){
-  const w=2;
-  if(longShortRatio>2){sc-=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'TOO MANY LONGS → BEARISH',strength:w})}
-  else if(longShortRatio<0.7){sc+=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'TOO MANY SHORTS → BULLISH',strength:w})}
+  const w=1.5;
+  if(longShortRatio>1.5){sc+=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'LONGS DOMINANT → BULLISH',strength:w})}
+  else if(longShortRatio<0.7){sc-=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'SHORTS DOMINANT → BEARISH',strength:w})}
   tw+=w*0.5;
 }
 
 // 20. PRICE VELOCITY & ACCELERATION
 const pv=priceVelocity(jp);
 if(pv){
-  const w=2.5;
+  const w=4; // Backtest: 71.4% accuracy
   if(pv.velocity>0&&pv.acceleration>0){sc+=w*1.5;sigs.push({name:'Velocity',signal:'ACCELERATING UP ↑↑',strength:w})}
   else if(pv.velocity<0&&pv.acceleration<0){sc-=w*1.5;sigs.push({name:'Velocity',signal:'ACCELERATING DOWN ↓↓',strength:w})}
   else if(pv.velocity>0&&pv.acceleration<0){sc+=w*0.3;sigs.push({name:'Velocity',signal:'SLOWING UP ↑↓',strength:w*0.5})}
