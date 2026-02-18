@@ -435,6 +435,24 @@ function processChainlinkTick(price, timestamp){
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
 // ═══ SIMPLE PTB: snapshot current price at each 5-minute mark ═══
+function savePtb(price){
+  const slot=Math.floor(Date.now()/300000);
+  localStorage.setItem('ptb',JSON.stringify({price,slot}));
+}
+function loadPtb(){
+  try{
+    const d=JSON.parse(localStorage.getItem('ptb'));
+    if(!d)return;
+    const currentSlot=Math.floor(Date.now()/300000);
+    // Only restore if it's from the current slot
+    if(d.slot===currentSlot&&d.price>50000&&d.price<200000){
+      markets[5].priceToBeat=d.price;
+      console.log('📌 PTB restored from cache: $'+d.price.toFixed(2));
+    }
+  }catch(e){}
+}
+loadPtb();
+
 function startPtbTimer(){
   const now=Date.now();
   const slotMs=300000;
@@ -444,17 +462,17 @@ function startPtbTimer(){
   console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
   
   setTimeout(()=>{
-    // Snapshot the current price — this IS the PTB
     const ptbPrice=latestChainlinkPrice||latestBtcPrice;
     if(ptbPrice&&markets[5]){
       markets[5].priceToBeat=ptbPrice;
+      savePtb(ptbPrice);
       console.log('🎯 PTB SET: $'+ptbPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
     }
-    // Repeat every 5 minutes exactly
     setInterval(()=>{
       const p=latestChainlinkPrice||latestBtcPrice;
       if(p&&markets[5]){
         markets[5].priceToBeat=p;
+        savePtb(p);
         console.log('🎯 PTB SET: $'+p.toFixed(2)+' at '+new Date().toLocaleTimeString());
       }
     },slotMs);
