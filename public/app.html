@@ -533,8 +533,14 @@ function connectPolyWs(){
   }catch(e){setTimeout(connectPolyWs,5000)}
 }
 
-// BACKUP: Binance WebSocket (in case Polymarket RTDS fails)
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+// ═══ BINANCE REAL-TIME — leads Chainlink by seconds, that's our edge ═══
+let binancePrice=0;
+let binancePrices=[]; // last 30 seconds of 1s prices
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);const p=parseFloat(d.p);binancePrice=p;if(!latestChainlinkPrice)latestBtcPrice=p;
+// Track last 60 Binance prices (roughly 1 per second)
+binancePrices.push({price:p,time:Date.now()});
+if(binancePrices.length>60)binancePrices.shift();
+};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();
 connectBtcWs();
 
@@ -561,6 +567,53 @@ async function fetchPolymarketOdds(){
 // Fetch every 10 seconds — this is our most valuable signal
 setInterval(fetchPolymarketOdds,10000);
 setTimeout(fetchPolymarketOdds,3000);
+
+// ═══ ORDERBOOK IMBALANCE — real-time bid/ask depth from Polymarket CLOB ═══
+let orderbookData={imbalance:0,upBidDepth:0,downBidDepth:0,lastUpdate:0,connected:false,tokenIds:[]};
+let clobWs=null;
+
+async function connectOrderbook(){
+  try{
+    const r=await fetch('/api/polymarket-odds');
+    const data=await r.json();
+    const tokens=data.clobTokenIds||[];
+    if(tokens.length<2)return;
+    
+    // Don't reconnect if same tokens
+    if(orderbookData.tokenIds[0]===tokens[0]&&orderbookData.connected)return;
+    orderbookData.tokenIds=tokens;
+    
+    if(clobWs)try{clobWs.close()}catch(e){}
+    clobWs=new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
+    clobWs.onopen=function(){
+      clobWs.send(JSON.stringify({type:'market',assets_ids:tokens}));
+      orderbookData.connected=true;
+      console.log('📚 Orderbook WS connected');
+    };
+    clobWs.onmessage=function(e){
+      try{
+        const msg=JSON.parse(e.data);
+        if(msg.event_type==='book'||msg.bids||msg.asks){
+          const tokenId=msg.asset_id||msg.market||'';
+          const bids=msg.bids||[];
+          const asks=msg.asks||[];
+          const bidDepth=bids.reduce((sum,b)=>sum+parseFloat(b.size||0)*parseFloat(b.price||0),0);
+          
+          if(tokenId===tokens[0])orderbookData.upBidDepth=bidDepth;
+          else if(tokenId===tokens[1])orderbookData.downBidDepth=bidDepth;
+          
+          const total=orderbookData.upBidDepth+orderbookData.downBidDepth;
+          orderbookData.imbalance=total>0?(orderbookData.upBidDepth-orderbookData.downBidDepth)/total:0;
+          orderbookData.lastUpdate=Date.now();
+        }
+      }catch(e){}
+    };
+    clobWs.onclose=function(){orderbookData.connected=false};
+    clobWs.onerror=function(){orderbookData.connected=false};
+  }catch(e){console.log('Orderbook error:',e)}
+}
+setTimeout(connectOrderbook,5000);
+setInterval(connectOrderbook,60000); // Check every 60s for new market
 
 // ═══ WHALE TRACKER: Follow Winner55555's trades ═══
 let whaleBet={direction:null,lastTrade:null,lastFetch:0,confidence:0,topTrader:'',winRate:0,count:0};
@@ -1474,53 +1527,118 @@ if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
 let finalPrediction;
 let strategy='';
 
+// ═══ NEW SIGNALS ═══
+
+// BINANCE LEAD: Binance moves before Chainlink. If Binance is above PTB while Chainlink isn't yet, Binance is leading up
+let binanceLead=0; // positive=Binance leading up, negative=leading down
+let binanceTrend=0; // slope of last 10 Binance prices
+if(binancePrice&&ptb){
+  const binanceDiff=binancePrice-ptb;
+  const chainlinkDiff=price-ptb;
+  binanceLead=binanceDiff-chainlinkDiff; // If positive, Binance is ahead of Chainlink upward
+  // Binance micro-trend: slope of last 10 seconds
+  if(binancePrices.length>=5){
+    const recent=binancePrices.slice(-10);
+    const n=recent.length;
+    let sx=0,sy=0,sxy=0,sx2=0;
+    for(let i=0;i<n;i++){sx+=i;sy+=recent[i].price;sxy+=i*recent[i].price;sx2+=i*i}
+    binanceTrend=(n*sxy-sx*sy)/(n*sx2-sx*sx); // $/tick
+  }
+}
+
+// ORDERBOOK IMBALANCE: positive = more $ buying UP shares
+const obImbalance=orderbookData.imbalance;
+const obFresh=(Date.now()-orderbookData.lastUpdate)<30000;
+const obStrong=Math.abs(obImbalance)>0.15; // 15%+ imbalance is meaningful
+
+// STREAK TRACKING: count consecutive same-direction results
+// If last 2-3 candles all went same way, next one likely flips (your observation!)
+let streakDir=null,streakLen=0;
+if(predictionHistory.length>=2){
+  const recent=predictionHistory.slice(-5);
+  for(let i=recent.length-1;i>=0;i--){
+    const wasUp=recent[i].result==='correct'?recent[i].prediction:!recent[i].prediction;
+    if(streakDir===null){streakDir=wasUp;streakLen=1}
+    else if(wasUp===streakDir)streakLen++;
+    else break;
+  }
+}
+const streakReversal=streakLen>=3; // 3+ in a row → expect flip
+
 // RSI + volume spike can upgrade reversion conditions
-// Lower the bar: if RSI is extreme OR volume spiked, reversion kicks in at smaller gaps
 const rsiExtreme=(rs&&(rs>75||rs<25));
 const reversionBoosted=(rsiExtreme||volumeSpike);
-const useReversionLoose=(priceDiff>25&&isSpike&&reversionBoosted); // $25+ with RSI/vol confirmation
+const useReversionLoose=(priceDiff>25&&isSpike&&reversionBoosted);
+
+// ═══ DECISION LOGIC (priority order) ═══
 
 if((useReversion||useReversionLoose)&&polyAgrees===false){
   finalPrediction=!priceAbovePtb;
-  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+' + market disagrees'+(rsiExtreme?' + RSI '+rs.toFixed(0):'')+(volumeSpike?' + vol spike '+volumeSpikeRatio.toFixed(1)+'x':'')+')';
+  strategy='REVERSION (spike+market)';
 }else if((useReversion||useReversionLoose)&&polyAgrees===null){
   finalPrediction=!priceAbovePtb;
-  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+(rsiExtreme?', RSI '+rs.toFixed(0):'')+(volumeSpike?', vol '+volumeSpikeRatio.toFixed(1)+'x':'')+')';
+  strategy='REVERSION (spike)';
 }else if(useReversion&&polyAgrees===true){
   finalPrediction=priceAbovePtb;
-  strategy='MOMENTUM (big gap but market confirms)';
+  strategy='MOMENTUM (spike+market agrees)';
+}else if(obFresh&&obStrong&&polyUp&&Math.abs(polyUp-0.5)>0.04){
+  // ORDERBOOK + POLYMARKET agree → very strong signal
+  const obSaysUp=obImbalance>0;
+  const polySaysUp=polyUp>0.5;
+  if(obSaysUp===polySaysUp){
+    finalPrediction=obSaysUp;
+    strategy='ORDERBOOK+POLY (OB:'+Math.round(obImbalance*100)+'%, Poly:'+Math.round(polyUp*100)+'¢)';
+  }else{
+    // Disagree — trust Polymarket (more money at stake)
+    finalPrediction=polySaysUp;
+    strategy='POLYMARKET over OB ('+Math.round(polyUp*100)+'¢ vs OB:'+Math.round(obImbalance*100)+'%)';
+  }
 }else if(polyUp&&Math.abs(polyUp-0.5)>0.08){
   finalPrediction=polyUp>0.5;
   strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
+}else if(binancePrices.length>=5&&Math.abs(binanceTrend)>0.5){
+  // Binance micro-trend: fast price movement → Chainlink will follow
+  const binanceUp=binanceTrend>0;
+  // If streak says flip, and Binance is weak, go with streak
+  if(streakReversal&&streakDir===binanceUp&&Math.abs(binanceTrend)<2){
+    finalPrediction=!streakDir;
+    strategy='STREAK FADE ('+streakLen+'x '+(streakDir?'up':'down')+' → flip)';
+  }else{
+    finalPrediction=binanceUp;
+    strategy='BINANCE LEAD ('+(binanceTrend>0?'+':'')+binanceTrend.toFixed(1)+'$/s)';
+  }
 }else if(priceDiff>15&&dominance>0.65){
-  // Steady drift + chart trend confirms
   if(trendStrength>0.3&&trendUp!==priceAbovePtb){
-    // Chart is trending opposite to where price sits — trend reversal
     finalPrediction=trendUp;
-    strategy='TREND REVERSAL (chart '+Math.round(upRatio*100)+'% up, price '+(priceAbovePtb?'above':'below')+')';
+    strategy='TREND REVERSAL';
   }else{
     finalPrediction=priceAbovePtb;
-    strategy='MOMENTUM ($'+priceDiff.toFixed(0)+', '+Math.round(dominance*100)+'% dom, chart '+Math.round(upRatio*100)+'% up)';
+    strategy='MOMENTUM ($'+priceDiff.toFixed(0)+')';
   }
+}else if(streakReversal){
+  // 3+ candles same direction → bet the flip
+  finalPrediction=!streakDir;
+  strategy='STREAK FADE ('+streakLen+'x '+(streakDir?'up':'down')+')';
 }else if(trendStrength>0.2&&totalTicks>=4){
-  // No strong gap/dominance — let chart trend decide
   finalPrediction=trendUp;
-  strategy='CHART TREND ('+upTicks+'↑ '+downTicks+'↓, slope '+(trendSlope>0?'+':'')+trendSlope.toFixed(1)+')';
+  strategy='CHART TREND ('+upTicks+'↑ '+downTicks+'↓)';
+}else if(obFresh&&obStrong){
+  finalPrediction=obImbalance>0;
+  strategy='ORDERBOOK ('+Math.round(obImbalance*100)+'% imbalance)';
 }else{
   finalPrediction=priceAbovePtb;
-  strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+' PTB)';
+  strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+')';
 }
 
 // CONFIDENCE
 let confidence=50;
-if((useReversion||useReversionLoose)&&polyAgrees===false){
-  confidence+=20;
-  if(rsiExtreme)confidence+=5;
-  if(volumeSpike)confidence+=5;
-}
-else if(polyUp&&Math.abs(polyUp-0.5)>0.08)confidence+=Math.abs(polyUp-0.5)*60;
-else if(priceDiff>15&&dominance>0.65)confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20)+(trendStrength>0.3?5:0);
-else if(trendStrength>0.2&&totalTicks>=4)confidence+=trendStrength*15;
+if(strategy.includes('REVERSION')&&polyAgrees===false){confidence+=20;if(rsiExtreme)confidence+=5;if(volumeSpike)confidence+=5}
+else if(strategy.includes('ORDERBOOK+POLY'))confidence+=18+Math.abs(obImbalance)*20;
+else if(strategy.includes('POLYMARKET'))confidence+=Math.abs(polyUp-0.5)*60;
+else if(strategy.includes('BINANCE'))confidence+=Math.min(Math.abs(binanceTrend)*3,15);
+else if(strategy.includes('STREAK'))confidence+=Math.min(streakLen*4,12);
+else if(strategy.includes('MOMENTUM'))confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20);
+else if(strategy.includes('ORDERBOOK'))confidence+=Math.abs(obImbalance)*25;
 else confidence+=2;
 const clampedConf=Math.min(confidence,92).toFixed(1);
 
@@ -1529,12 +1647,12 @@ const signals=[];
 signals.push({name:'Gap: $'+priceDiff.toFixed(0)+(priceAbovePtb?' above':' below'),dir:priceAbovePtb,weight:priceDiff/10});
 if(ptbTracker.totalChecks>=3)signals.push({name:'Consistency '+Math.round(dominance*100)+'%',dir:aboveRatio>0.5,weight:dominance*5});
 if(isSpike)signals.push({name:'⚡ Spike ('+Math.round(spikeRatio*100)+'%)',dir:!priceAbovePtb,weight:spikeRatio*5});
-if(rs){
-  const rsiDir=rs>50;
-  signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1});
-}
-if(volumeSpike)signals.push({name:'📊 Vol Spike '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
+if(rs){const rsiDir=rs>50;signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1})}
+if(volumeSpike)signals.push({name:'📊 Vol '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
+if(binancePrices.length>=5)signals.push({name:'🔮 Binance '+(binanceTrend>0?'+':'')+binanceTrend.toFixed(1)+'$/s',dir:binanceTrend>0,weight:Math.abs(binanceTrend)*2});
+if(obFresh)signals.push({name:'📚 Orderbook '+(obImbalance>0?'+':'')+Math.round(obImbalance*100)+'%',dir:obImbalance>0,weight:Math.abs(obImbalance)*10});
 if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
+if(streakLen>=2)signals.push({name:'🔄 Streak: '+streakLen+'x '+(streakDir?'up':'down'),dir:!streakDir,weight:streakLen*2});
 signals.push({name:'→ '+strategy,dir:finalPrediction,weight:0});
 
 const predSource=strategy;
