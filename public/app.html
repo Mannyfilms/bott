@@ -438,16 +438,28 @@ function processChainlinkTick(price, timestamp){
 function savePtb(price){
   const slot=Math.floor(Date.now()/300000);
   localStorage.setItem('ptb',JSON.stringify({price,slot}));
+  // Also save to server so other devices can load it
+  fetch('/api/ptb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,slot})}).catch(()=>{});
 }
-function loadPtb(){
+async function loadPtb(){
+  const currentSlot=Math.floor(Date.now()/300000);
+  // Try localStorage first (fastest)
   try{
     const d=JSON.parse(localStorage.getItem('ptb'));
-    if(!d)return;
-    const currentSlot=Math.floor(Date.now()/300000);
-    // Only restore if it's from the current slot
-    if(d.slot===currentSlot&&d.price>50000&&d.price<200000){
+    if(d&&d.slot===currentSlot&&d.price>50000&&d.price<200000){
       markets[5].priceToBeat=d.price;
-      console.log('📌 PTB restored from cache: $'+d.price.toFixed(2));
+      console.log('📌 PTB restored from local cache: $'+d.price.toFixed(2));
+      return;
+    }
+  }catch(e){}
+  // Try server (works across devices)
+  try{
+    const r=await fetch('/api/ptb');
+    const d=await r.json();
+    if(d.price&&d.price>50000&&d.price<200000){
+      markets[5].priceToBeat=d.price;
+      localStorage.setItem('ptb',JSON.stringify({price:d.price,slot:currentSlot}));
+      console.log('📌 PTB restored from server: $'+d.price.toFixed(2));
     }
   }catch(e){}
 }
@@ -534,6 +546,26 @@ async function fetchPolymarketOdds(){
 // Fetch every 10 seconds — this is our most valuable signal
 setInterval(fetchPolymarketOdds,10000);
 setTimeout(fetchPolymarketOdds,3000);
+
+// ═══ WHALE TRACKER: Follow Winner55555's trades ═══
+let whaleBet={direction:null,lastTrade:null,lastFetch:0,confidence:0,topTrader:'',winRate:0,count:0};
+async function fetchWhaleTrades(){
+  try{
+    const r=await fetch('/api/whale-trades');
+    const data=await r.json();
+    if(data.whaleBet){
+      whaleBet={direction:data.whaleBet,lastTrade:data.latestTrade,lastFetch:Date.now(),
+        confidence:data.confidence||0,topTrader:data.topTrader||'',winRate:data.winRate||0,count:data.totalTradesFound||0};
+      console.log('🏆 Top trader: '+data.topTrader+' ('+(data.winRate*100).toFixed(0)+'% win rate) → '+data.whaleBet);
+    }else if(data.topTrader){
+      whaleBet.topTrader=data.topTrader;
+      whaleBet.winRate=data.winRate||0;
+      console.log('🏆 Top trader: '+data.topTrader+' ('+(data.winRate*100).toFixed(0)+'%) — no bet this slot yet');
+    }
+  }catch(e){}
+}
+setInterval(fetchWhaleTrades,15000);
+setTimeout(fetchWhaleTrades,3000);
 // USDT typically trades at ~$0.9995-1.0005 vs USD
 // Polymarket uses Chainlink BTC/USD, Binance gives BTC/USDT
 // We apply a small correction factor when falling back to Binance
@@ -1330,27 +1362,29 @@ const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // secon
 const lockAfter=60; // Wait full 60 seconds for better data
 const shouldLock=timeInSlot>=lockAfter;
 
-// CORE RULE: Use Polymarket odds as the primary signal
-// But also factor in price vs PTB as confirmation
+// CORE RULE: Use Polymarket odds + Whale tracker + Price vs PTB
 let finalPrediction;
 let predSource='';
 const priceAbovePtb=price>ptb;
+
+// Collect signals
+const signals=[];
 if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  const polyUp=polymarketOdds.upPrice>0.5;
-  // If Polymarket and price vs PTB AGREE → strong signal
-  // If they DISAGREE → use price vs PTB (it's the actual market state)
-  if(polyUp===priceAbovePtb){
-    finalPrediction=polyUp;
-    predSource='Polymarket+Price AGREE ('+(polyUp?'YES':'NO')+')';
-  }else{
-    // Disagree: use price vs PTB since that's the real position
-    finalPrediction=priceAbovePtb;
-    predSource='Price vs PTB ($'+(price-ptb).toFixed(0)+') overrides Polymarket';
-  }
-}else{
-  finalPrediction=priceAbovePtb;
-  predSource='Price vs PTB ($'+(price-ptb).toFixed(2)+')';
+  signals.push({name:'Polymarket',dir:polymarketOdds.upPrice>0.5,weight:3});
 }
+if(whaleBet.direction&&(Date.now()-whaleBet.lastFetch)<120000){
+  signals.push({name:'🐋 Whale',dir:whaleBet.direction==='YES',weight:4}); // Whale gets highest weight
+}
+signals.push({name:'Price vs PTB',dir:priceAbovePtb,weight:2});
+
+// Weighted vote
+let yesWeight=0,noWeight=0;
+signals.forEach(s=>{
+  if(s.dir)yesWeight+=s.weight;
+  else noWeight+=s.weight;
+});
+finalPrediction=yesWeight>=noWeight;
+predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name).join(' | ');
 let displayWillBeat=finalPrediction;
 let displayConf=pred.confidence;
 let lockStatus='';
