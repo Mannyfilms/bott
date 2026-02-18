@@ -434,9 +434,33 @@ function processChainlinkTick(price, timestamp){
 } // Track which slot we captured PTB for
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
-// This is the SAME data stream Polymarket uses for PTB: https://data.chain.link/streams/btc-usd
-let chainlinkPtbBuffer=[]; // Store ticks with source timestamps for PTB capture
-let lastPtbSlotCaptured=null;
+// ═══ SIMPLE PTB: snapshot current price at each 5-minute mark ═══
+function startPtbTimer(){
+  const now=Date.now();
+  const slotMs=300000;
+  const nextBoundary=Math.ceil(now/slotMs)*slotMs;
+  const delay=nextBoundary-now;
+  
+  console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
+  
+  setTimeout(()=>{
+    // Snapshot the current price — this IS the PTB
+    const ptbPrice=latestChainlinkPrice||latestBtcPrice;
+    if(ptbPrice&&markets[5]){
+      markets[5].priceToBeat=ptbPrice;
+      console.log('🎯 PTB SET: $'+ptbPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
+    }
+    // Repeat every 5 minutes exactly
+    setInterval(()=>{
+      const p=latestChainlinkPrice||latestBtcPrice;
+      if(p&&markets[5]){
+        markets[5].priceToBeat=p;
+        console.log('🎯 PTB SET: $'+p.toFixed(2)+' at '+new Date().toLocaleTimeString());
+      }
+    },slotMs);
+  },delay);
+}
+startPtbTimer();
 
 function connectPolyWs(){
   try{
@@ -459,57 +483,8 @@ function connectPolyWs(){
           latestChainlinkPrice=d.payload.value;
           latestBtcPrice=d.payload.value;
           
-          // Source timestamp from Chainlink (milliseconds)
           const srcTs=d.payload.timestamp||Date.now();
-          
-          // Build candles from Chainlink ticks
           processChainlinkTick(d.payload.value, srcTs);
-          
-          // Store tick for PTB capture — keep last 30 seconds worth
-          chainlinkPtbBuffer.push({price:d.payload.value, ts:srcTs});
-          const cutoff=Date.now()-30000;
-          chainlinkPtbBuffer=chainlinkPtbBuffer.filter(t=>t.ts>cutoff);
-          
-          // ═══ PRECISION PTB CAPTURE ═══
-          // Check if this tick crossed a 5-minute boundary
-          const slotMs=300000;
-          const currentSlot=Math.floor(srcTs/slotMs);
-          if(lastPtbSlotCaptured!==currentSlot){
-            // New slot! Use the FIRST tick of the new slot as PTB
-            // This is the closest we can get to what Polymarket captures
-            // Also check: do we have a tick from just before the boundary?
-            const boundary=currentSlot*slotMs;
-            
-            // Find last tick BEFORE boundary (previous slot's final price)
-            let lastBefore=null;
-            // Find first tick AFTER boundary (new slot's first price)  
-            let firstAfter=null;
-            
-            chainlinkPtbBuffer.forEach(t=>{
-              if(t.ts<boundary){
-                if(!lastBefore||t.ts>lastBefore.ts)lastBefore=t;
-              }else{
-                if(!firstAfter||t.ts<firstAfter.ts)firstAfter=t;
-              }
-            });
-            
-            // Use the tick closest to the boundary
-            let ptbTick=null;
-            if(lastBefore&&firstAfter){
-              ptbTick=(boundary-lastBefore.ts)<=(firstAfter.ts-boundary)?lastBefore:firstAfter;
-            }else{
-              ptbTick=lastBefore||firstAfter||{price:d.payload.value,ts:srcTs};
-            }
-            
-            if(ptbTick&&markets[5]){
-              const dist=Math.abs(ptbTick.ts-boundary);
-              const side=ptbTick.ts<boundary?'before':'after';
-              markets[5].priceToBeat=ptbTick.price;
-              lastPtbSlotCaptured=currentSlot;
-              console.log('🎯 CHAINLINK PTB: $'+ptbTick.price.toFixed(2)+' ('+dist+'ms '+side+' boundary)');
-            }
-          }
-          
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
           if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
         }
@@ -1537,18 +1512,11 @@ if(priceHistory.length>500)priceHistory.shift();
   if(m.currentSlot!==currentSlot){
     const isFirstDetection=m.currentSlot===null;
     m.currentSlot=currentSlot;
-    // Only set PTB on actual slot CHANGE, not first detection after reload
-    if(!isFirstDetection){
-      // PTB is set by the Chainlink WebSocket handler (precision capture)
-      // Fallback only if WebSocket missed it
-      if(tf===5&&!m.priceToBeat&&latestChainlinkPrice){
-        m.priceToBeat=latestChainlinkPrice;
-        console.log('📌 PTB fallback (Chainlink current): $'+latestChainlinkPrice.toFixed(2));
-      }else if(tf!==5){
-        m.priceToBeat=latestChainlinkPrice||price;
-      }
+    // PTB is set by the 5-minute timer (startPtbTimer)
+    // Only set for non-5m timeframes here
+    if(tf!==5){
+      m.priceToBeat=latestChainlinkPrice||price;
     }
-    // On first detection (reload), PTB stays null until next boundary
   }
 });
 // Track position vs PTB every tick
