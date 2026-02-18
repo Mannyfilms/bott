@@ -921,21 +921,21 @@ let sigs=[],sc=0,tw=0;
 
 // ★★★ STRATEGY 0: PRICE vs PTB REALITY CHECK (heaviest weight) ★★★
 // This is the most important signal — where is price RIGHT NOW relative to PTB?
-// If price is $200 below PTB with 2 minutes left, it's almost certainly NO.
+// Near the end of a slot, this is basically a FACT not a prediction.
 {
   const diff=cur-ptb;
   const pctDiff=(diff/ptb)*100;
   const slotEnd=getSlotEnd(selectedTimeframe);
-  const timeLeft=(slotEnd-new Date())/1000; // seconds remaining
-  const timeTotal=selectedTimeframe*60; // total seconds in slot
+  const timeLeft=(slotEnd-new Date())/1000;
+  const timeTotal=selectedTimeframe*60;
   const timePct=Math.max(0,timeLeft/timeTotal); // 1.0 = just started, 0 = about to end
   
-  // The further price is from PTB and the less time left, the stronger this signal
-  // Weight increases as time runs out (price has less time to recover)
-  const urgency=1+(1-timePct)*4; // 1x at start, 5x at end
-  const w=5*urgency; // Base weight 5, up to 25 near end
+  // Urgency scales EXPONENTIALLY as time runs out
+  // With 4 min left: ~2x, with 2 min left: ~5x, with 30s left: ~15x, with 10s left: ~25x
+  const urgency=1+Math.pow((1-timePct),2)*24;
+  const w=5*urgency; // Base 5, up to ~125 near end
   
-  if(Math.abs(pctDiff)>0.01){ // More than 0.01% away
+  if(Math.abs(pctDiff)>0.005){ // More than 0.005% away (~$3.50 on $67k)
     sc+=diff>0?w:-w;
     const label=diff>0?'ABOVE PTB (+$'+diff.toFixed(0)+')':'BELOW PTB (-$'+Math.abs(diff).toFixed(0)+')';
     const timeStr=timeLeft>60?Math.floor(timeLeft/60)+'m left':Math.floor(timeLeft)+'s left';
@@ -991,19 +991,19 @@ sigs.push({name:'Regime',signal:regime,strength:0});
 
 // 1. VWAP Strategy (institutional favorite)
 const vw=vwap(candles);
-if(vw){const w=3;const adj=applyLearned('VWAP',w);if(cur>vw){sc+=adj;sigs.push({name:'VWAP',signal:'BULLISH',strength:adj})}else{sc-=adj;sigs.push({name:'VWAP',signal:'BEARISH',strength:adj})}tw+=adj}
+if(vw){const w=1.5;const adj=applyLearned('VWAP',w);if(cur>vw){sc+=adj;sigs.push({name:'VWAP',signal:'BULLISH',strength:adj})}else{sc-=adj;sigs.push({name:'VWAP',signal:'BEARISH',strength:adj})}tw+=adj}
 
 // 2. EMA Ribbon (trend strength) — boosted in trends
 const ribbon=emaRibbon(jp);
-if(ribbon){const w=3*trendMult;const adj=applyLearned('EMARibbon',w);if(ribbon.bullish){sc+=adj*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BULLISH',strength:adj})}else if(ribbon.bearish){sc-=adj*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BEARISH',strength:adj})}else{const bias=ribbon.e8>ribbon.e21?1:-1;sc+=adj*0.5*bias;sigs.push({name:'EMA Ribbon',signal:bias>0?'BULLISH':'BEARISH',strength:adj*0.5})}tw+=adj}
+if(ribbon){const w=1.5*trendMult;const adj=applyLearned('EMARibbon',w);if(ribbon.bullish){sc+=adj*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BULLISH',strength:adj})}else if(ribbon.bearish){sc-=adj*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BEARISH',strength:adj})}else{const bias=ribbon.e8>ribbon.e21?1:-1;sc+=adj*0.5*bias;sigs.push({name:'EMA Ribbon',signal:bias>0?'BULLISH':'BEARISH',strength:adj*0.5})}tw+=adj}
 
 // 3. RSI with divergence
 const rs=rsi(jp);
-if(rs){const w=2.5;let s='NEUTRAL';if(rs<25){sc+=w*2;s='STRONG BULLISH'}else if(rs>75){sc-=w*2;s='STRONG BEARISH'}else if(rs<40){sc+=w*.7;s='BULLISH'}else if(rs>60){sc-=w*.7;s='BEARISH'}tw+=w;sigs.push({name:'RSI ('+rs.toFixed(1)+')',signal:s,strength:w})}
+if(rs){const w=1.2;let s='NEUTRAL';if(rs<25){sc+=w*2;s='STRONG BULLISH'}else if(rs>75){sc-=w*2;s='STRONG BEARISH'}else if(rs<40){sc+=w*.7;s='BULLISH'}else if(rs>60){sc-=w*.7;s='BEARISH'}tw+=w;sigs.push({name:'RSI ('+rs.toFixed(1)+')',signal:s,strength:w})}
 
 // 4. Bollinger Bands squeeze/expansion
 const b=bb(jp);
-if(b){const w=2;const pos=(cur-b.lower)/(b.upper-b.lower);const squeeze=b.bw<1;
+if(b){const w=1;const pos=(cur-b.lower)/(b.upper-b.lower);const squeeze=b.bw<1;
 if(squeeze){sigs.push({name:'BB Squeeze',signal:'BREAKOUT SOON',strength:w*.5})}
 else if(pos<.15){sc+=w*1.5;sigs.push({name:'Bollinger',signal:'STRONG BULLISH',strength:w})}
 else if(pos>.85){sc-=w*1.5;sigs.push({name:'Bollinger',signal:'STRONG BEARISH',strength:w})}
@@ -1013,33 +1013,33 @@ tw+=w}
 
 // 5. MACD
 const mc2=macd(jp);
-if(mc2){const w=2;sc+=mc2.macd>0?w:-w;tw+=w;sigs.push({name:'MACD',signal:mc2.signal,strength:w})}
+if(mc2){const w=1;sc+=mc2.macd>0?w:-w;tw+=w;sigs.push({name:'MACD',signal:mc2.signal,strength:w})}
 
 // 6. Williams %R (oversold/overbought)
 const wr=williamsR(jp);
-if(wr!==null){const w=2;if(wr>-20){sc-=w;sigs.push({name:'Williams %R',signal:'OVERBOUGHT',strength:w})}else if(wr<-80){sc+=w;sigs.push({name:'Williams %R',signal:'OVERSOLD',strength:w})}tw+=w*0.5}
+if(wr!==null){const w=1;if(wr>-20){sc-=w;sigs.push({name:'Williams %R',signal:'OVERBOUGHT',strength:w})}else if(wr<-80){sc+=w;sigs.push({name:'Williams %R',signal:'OVERSOLD',strength:w})}tw+=w*0.5}
 
 // 7. ADX (trend strength)
 const adxVal=adx(jp);
-if(adxVal){const w=2;if(adxVal.adx>25){if(adxVal.pDI>adxVal.nDI){sc+=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG UPTREND',strength:w})}else{sc-=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG DOWNTREND',strength:w})}}else{sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'RANGING',strength:0})}tw+=w}
+if(adxVal){const w=1;if(adxVal.adx>25){if(adxVal.pDI>adxVal.nDI){sc+=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG UPTREND',strength:w})}else{sc-=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG DOWNTREND',strength:w})}}else{sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'RANGING',strength:0})}tw+=w}
 
 // 8. Mean Reversion (★ boosted in ranging markets)
 const mr=meanReversion(jp);
-if(mr){const w=3*revertMult;if(mr.zscore>1.5){sc-=w;sigs.push({name:'Mean Reversion',signal:'OVERBOUGHT (z:'+mr.zscore.toFixed(1)+')',strength:w})}else if(mr.zscore<-1.5){sc+=w;sigs.push({name:'Mean Reversion',signal:'OVERSOLD (z:'+mr.zscore.toFixed(1)+')',strength:w})}tw+=w*0.5}
+if(mr){const w=1.5*revertMult;if(mr.zscore>1.5){sc-=w;sigs.push({name:'Mean Reversion',signal:'OVERBOUGHT (z:'+mr.zscore.toFixed(1)+')',strength:w})}else if(mr.zscore<-1.5){sc+=w;sigs.push({name:'Mean Reversion',signal:'OVERSOLD (z:'+mr.zscore.toFixed(1)+')',strength:w})}tw+=w*0.5}
 
 // 9. Rate of Change (★ boosted in trending markets)
 const roc1=roc(jp,5),roc2=roc(jp,15),roc3=roc(jp,30);
-if(roc1!==null&&roc2!==null){const w=2.5*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
+if(roc1!==null&&roc2!==null){const w=1.2*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
 
 // 10. OBV — REMOVED (adds noise on 5-min timeframes)
 
 // 11. Support/Resistance proximity
 const sr=supportResistance(jp);
-if(sr){const w=2;if(sr.distToResist!==null&&sr.distToResist<0.05){sc-=w;sigs.push({name:'Near Resistance',signal:'BEARISH',strength:w})}else if(sr.distToSupport!==null&&sr.distToSupport<0.05){sc+=w;sigs.push({name:'Near Support',signal:'BULLISH',strength:w})}tw+=w*0.3}
+if(sr){const w=1;if(sr.distToResist!==null&&sr.distToResist<0.05){sc-=w;sigs.push({name:'Near Resistance',signal:'BEARISH',strength:w})}else if(sr.distToSupport!==null&&sr.distToSupport<0.05){sc+=w;sigs.push({name:'Near Support',signal:'BULLISH',strength:w})}tw+=w*0.3}
 
 // 12. Candlestick Patterns
 const cp=candlePatterns(candles);
-if(cp){const w=2.5;if(cp.signal==='BULLISH')sc+=w*cp.strength;else if(cp.signal==='BEARISH')sc-=w*cp.strength;sigs.push({name:cp.pattern,signal:cp.signal,strength:w});tw+=w}
+if(cp){const w=1.2;if(cp.signal==='BULLISH')sc+=w*cp.strength;else if(cp.signal==='BEARISH')sc-=w*cp.strength;sigs.push({name:cp.pattern,signal:cp.signal,strength:w});tw+=w}
 
 // 13. Buy/Sell Pressure
 {const w=2;const bias=(takerBuyRatio-0.5)*2;sc+=w*bias;sigs.push({name:'Buy/Sell Pressure',signal:takerBuyRatio>0.55?'BUYERS DOMINANT':'SELLERS DOMINANT',strength:w});tw+=w}
@@ -1051,7 +1051,7 @@ if(Math.abs(externalData.fundingRate)>0.01){const w=1.5;if(externalData.fundingR
 
 // 16. ORDER BOOK IMBALANCE (★ highest impact for 5-min)
 if(orderBookData.bidTotal>0){
-  const w=4; // High weight - this is the best short-term predictor
+  const w=6; // Very high weight - best real-time short-term predictor
   const imb=orderBookData.imbalance;
   const nearImb=orderBookData.nearImbalance||imb;
   // Near-market imbalance weighted 2x vs full book
@@ -1080,7 +1080,7 @@ if(openInterestData.current>0&&jp.length>=10){
 
 // 18. TRADE FLOW ANALYSIS (★ high impact)
 if(tradeFlowData.buyVolume>0){
-  const w=3.5;
+  const w=5;
   const ratio=tradeFlowData.buyRatio;
   const bias=(ratio-0.5)*2;
   sc+=w*bias;
