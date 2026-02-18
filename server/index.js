@@ -105,6 +105,173 @@ app.post('/api/logout', (req, res) => {
   return res.json({ success: true });
 });
 
+// ─── Smart Whale Tracker: Find & follow the best BTC 5-min trader ───
+let topTraderCache = { wallet: null, username: null, winRate: 0, lastDiscovery: 0 };
+let whaleCache = { trades: null, lastFetch: 0 };
+
+// Discover the best performing BTC 5-min trader from recent markets
+async function discoverTopTrader() {
+  // Only rediscover every 5 minutes
+  if (topTraderCache.wallet && Date.now() - topTraderCache.lastDiscovery < 300000) {
+    return topTraderCache;
+  }
+  
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const traderStats = {}; // wallet -> {wins, losses, totalSize, username}
+    
+    // Look at the last 6 resolved 5-min BTC markets (30 min of history)
+    for (let i = 2; i <= 7; i++) {
+      const slotTs = nowSec - (nowSec % 300) - (i * 300);
+      const slug = 'btc-updown-5m-' + slotTs;
+      
+      try {
+        // Get the market's condition_id from Gamma
+        const evtResp = await fetch('https://gamma-api.polymarket.com/events?slug=' + slug);
+        if (!evtResp.ok) continue;
+        const evtData = await evtResp.json();
+        if (!evtData || !evtData.length || !evtData[0].markets || !evtData[0].markets[0]) continue;
+        
+        const mkt = evtData[0].markets[0];
+        const conditionId = mkt.conditionId;
+        const outcomes = JSON.parse(mkt.outcomes || '[]');
+        const outcomePrices = JSON.parse(mkt.outcomePrices || '[]');
+        
+        // Determine which outcome won (price near 1.0 = winner)
+        let winner = null;
+        outcomes.forEach((o, idx) => {
+          const p = parseFloat(outcomePrices[idx] || 0);
+          if (p > 0.9) winner = o; // "Up" or "Down"
+        });
+        if (!winner) continue;
+        
+        // Get top traders for this resolved market
+        // Use the token_id to find trades
+        const tokens = mkt.clobTokenIds ? JSON.parse(mkt.clobTokenIds) : [];
+        if (tokens.length === 0) continue;
+        
+        // Get recent trades for this market from CLOB
+        const tradesResp = await fetch('https://clob.polymarket.com/trades?asset_id=' + tokens[0] + '&limit=50');
+        if (!tradesResp.ok) continue;
+        const trades = await tradesResp.json();
+        
+        if (!Array.isArray(trades)) continue;
+        
+        trades.forEach(trade => {
+          const wallet = trade.maker_address || trade.taker_address;
+          if (!wallet) return;
+          
+          // Did this trade bet on the winner?
+          const betUp = (trade.side === 'BUY' && trade.outcome === 'Up') || (trade.side === 'SELL' && trade.outcome === 'Down');
+          const betDown = !betUp;
+          const wasRight = (winner === 'Up' && betUp) || (winner === 'Down' && betDown);
+          const size = parseFloat(trade.size || trade.matchSize || 0);
+          
+          if (!traderStats[wallet]) traderStats[wallet] = { wins: 0, losses: 0, totalSize: 0, username: trade.name || trade.pseudonym || wallet.slice(0,8) };
+          if (wasRight) traderStats[wallet].wins++;
+          else traderStats[wallet].losses++;
+          traderStats[wallet].totalSize += size;
+        });
+      } catch(e) { continue; }
+    }
+    
+    // Find the trader with the best win rate (min 3 trades)
+    let bestWallet = null, bestRate = 0, bestUsername = '';
+    Object.entries(traderStats).forEach(([wallet, stats]) => {
+      const total = stats.wins + stats.losses;
+      if (total >= 3) {
+        const rate = stats.wins / total;
+        if (rate > bestRate || (rate === bestRate && stats.totalSize > (traderStats[bestWallet]?.totalSize || 0))) {
+          bestRate = rate;
+          bestWallet = wallet;
+          bestUsername = stats.username;
+        }
+      }
+    });
+    
+    if (bestWallet) {
+      topTraderCache = { wallet: bestWallet, username: bestUsername, winRate: bestRate, lastDiscovery: Date.now() };
+      console.log('🏆 Top trader: ' + bestUsername + ' (' + (bestRate * 100).toFixed(0) + '% win rate)');
+    }
+    
+    return topTraderCache;
+  } catch(e) {
+    console.log('Trader discovery error:', e.message);
+    return topTraderCache;
+  }
+}
+
+app.get('/api/whale-trades', async (req, res) => {
+  try {
+    // Cache for 10 seconds
+    if (whaleCache.trades && Date.now() - whaleCache.lastFetch < 10000) {
+      return res.json(whaleCache.trades);
+    }
+    
+    // Find the best trader
+    const topTrader = await discoverTopTrader();
+    
+    const nowSec = Math.floor(Date.now() / 1000);
+    const currentSlotTs = nowSec - (nowSec % 300);
+    const currentSlug = 'btc-updown-5m-' + currentSlotTs;
+    
+    let whaleBet = null;
+    let latestTrade = null;
+    let allTrades = [];
+    
+    if (topTrader.wallet) {
+      try {
+        const resp = await fetch('https://data-api.polymarket.com/activity?address=' + topTrader.wallet + '&limit=10');
+        if (resp.ok) {
+          const activity = await resp.json();
+          
+          // Filter for current BTC 5-min slot
+          const slotTrades = activity.filter(t => 
+            t.eventSlug && t.eventSlug === currentSlug
+          );
+          
+          slotTrades.forEach(t => {
+            const direction = t.side === 'BUY' 
+              ? (t.outcome === 'Up' ? 'YES' : 'NO')
+              : (t.outcome === 'Up' ? 'NO' : 'YES');
+            
+            allTrades.push({
+              username: topTrader.username,
+              side: t.side,
+              outcome: t.outcome,
+              direction,
+              price: t.price,
+              size: parseFloat(t.usdcSize || t.size || 0),
+              timestamp: t.timestamp,
+              slug: t.eventSlug
+            });
+          });
+          
+          if (allTrades.length > 0) {
+            latestTrade = allTrades[0];
+            whaleBet = latestTrade.direction;
+          }
+        }
+      } catch(e) {}
+    }
+    
+    const result = {
+      whaleBet,
+      topTrader: topTrader.username || 'Searching...',
+      winRate: topTrader.winRate,
+      latestTrade,
+      recentTrades: allTrades,
+      totalTradesFound: allTrades.length,
+      confidence: topTrader.winRate
+    };
+    
+    whaleCache = { trades: result, lastFetch: Date.now() };
+    return res.json(result);
+  } catch(e) {
+    res.json({ error: e.message, trades: [] });
+  }
+});
+
 // ─── Polymarket PTB Proxy ───
 app.get('/api/polymarket-ptb', async (req, res) => {
   try {
