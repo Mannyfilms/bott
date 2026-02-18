@@ -42,7 +42,26 @@
         .g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
         .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
         .g6{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:10px}
-        @media(max-width:768px){.g2,.g3{grid-template-columns:1fr}.nav{flex-wrap:wrap}.nav-right{width:100%;justify-content:flex-end}}
+        @media(max-width:768px){
+          .g2,.g3{grid-template-columns:1fr}
+          .nav{flex-wrap:wrap;gap:8px;padding:10px}
+          .nav-right{width:100%;justify-content:flex-end}
+          .shell{padding:10px 10px 40px}
+          .card{padding:14px}
+          .price-big{font-size:1.6em}
+          .pred{padding:16px}
+          #predictionValue{font-size:1.8em}
+          .sig{font-size:.72em;padding:5px 8px}
+          h1{font-size:1.1em}
+        }
+        /* Light mode */
+        .light-mode{--bg:#f5f5f7;--sf1:#ffffff;--sf2:#f0f0f3;--sf3:#e5e5ea;--tx1:#1d1d1f;--tx2:#6e6e73;--tx3:#8e8e93;--bd:rgba(0,0,0,.08)}
+        .light-mode .card{box-shadow:0 1px 4px rgba(0,0,0,.08)}
+        .light-mode .pred-up{background:linear-gradient(135deg,#d4edda,#c3e6cb)}
+        .light-mode .pred-dn{background:linear-gradient(135deg,#f8d7da,#f5c6cb)}
+        .light-mode .nav{background:rgba(255,255,255,.85)}
+        .light-mode .sig{background:var(--sf2)}
+        .theme-toggle{cursor:pointer;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:6px 12px;color:var(--tx2);font-size:.8em}
 
         .status{padding:10px 16px;background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);text-align:center;font-size:.82em;color:var(--tx2);margin-bottom:12px}
         .mlbar{padding:10px 16px;background:var(--bls);border:1px solid rgba(99,107,255,.1);border-radius:var(--rs);font-size:.76em;color:var(--bl);line-height:1.7}
@@ -109,6 +128,7 @@
         <div class="nav-mark">&#8383;</div>
         <div class="nav-text"><h1>BTC Prediction</h1><span>5-Minute Forecasts &middot; Chainlink BTC/USD (Polymarket Source)</span></div>
         <div class="nav-right">
+            <button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀️ Light</button>
             <span class="nav-user" id="userGreeting"></span>
             <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
             <button class="btn btn-g" id="stopBtn" onclick="stopPredictions()" disabled>Stop</button>
@@ -364,6 +384,16 @@ setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgres
 
 // ═══ UTILITY ═══
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
+
+// Theme toggle
+function toggleTheme(){
+  document.body.classList.toggle('light-mode');
+  const isLight=document.body.classList.contains('light-mode');
+  document.getElementById('themeBtn').textContent=isLight?'🌙 Dark':'☀️ Light';
+  localStorage.setItem('btcTheme',isLight?'light':'dark');
+}
+// Load saved theme
+if(localStorage.getItem('btcTheme')==='light'){document.body.classList.add('light-mode');document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('themeBtn');if(b)b.textContent='🌙 Dark'})}
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
 let lastChainlinkSlot=null; // Track slot changes from Chainlink stream
@@ -428,7 +458,18 @@ async function tryFetchPTB(){
   const currentWindow=nowSec-(nowSec%300);
   if(lastPtbFetchSlot===currentWindow)return;
   
-  const ptb=await fetchPolymarketPTB();
+  // Try dedicated PTB endpoint first
+  let ptb=await fetchPolymarketPTB();
+  
+  // If that didn't work, try odds endpoint which also returns PTB
+  if(!ptb){
+    try{
+      const r=await fetch('/api/polymarket-odds');
+      const data=await r.json();
+      if(data.ptb&&data.ptb>10000)ptb=data.ptb;
+    }catch(e){}
+  }
+  
   if(ptb&&markets[5]){
     markets[5].priceToBeat=ptb;
     lastPtbFetchSlot=currentWindow;
@@ -437,6 +478,19 @@ async function tryFetchPTB(){
 }
 setInterval(tryFetchPTB,10000);
 setTimeout(tryFetchPTB,2000);
+
+// ═══ POLYMARKET ODDS (the market's own prediction) ═══
+let polymarketOdds={upPrice:null,downPrice:null,lastFetch:0};
+async function fetchPolymarketOdds(){
+  try{
+    const r=await fetch('/api/polymarket-odds');
+    const data=await r.json();
+    if(data.upPrice)polymarketOdds={upPrice:data.upPrice,downPrice:data.downPrice,lastFetch:Date.now()};
+  }catch(e){}
+}
+// Fetch every 15 seconds
+setInterval(fetchPolymarketOdds,15000);
+setTimeout(fetchPolymarketOdds,3000);
 // USDT typically trades at ~$0.9995-1.0005 vs USD
 // Polymarket uses Chainlink BTC/USD, Binance gives BTC/USDT
 // We apply a small correction factor when falling back to Binance
@@ -957,9 +1011,7 @@ if(mr){const w=3*revertMult;if(mr.zscore>1.5){sc-=w;sigs.push({name:'Mean Revers
 const roc1=roc(jp,5),roc2=roc(jp,15),roc3=roc(jp,30);
 if(roc1!==null&&roc2!==null){const w=2.5*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
 
-// 10. OBV (On Balance Volume)
-const obvVal=obv(jp,volumes);
-if(obvVal!==null){const w=1.5;const obvTrend=obvVal>0?1:-1;sc+=w*obvTrend;sigs.push({name:'OBV',signal:obvTrend>0?'ACCUMULATION':'DISTRIBUTION',strength:w});tw+=w}
+// 10. OBV — REMOVED (adds noise on 5-min timeframes)
 
 // 11. Support/Resistance proximity
 const sr=supportResistance(jp);
@@ -972,8 +1024,7 @@ if(cp){const w=2.5;if(cp.signal==='BULLISH')sc+=w*cp.strength;else if(cp.signal=
 // 13. Buy/Sell Pressure
 {const w=2;const bias=(takerBuyRatio-0.5)*2;sc+=w*bias;sigs.push({name:'Buy/Sell Pressure',signal:takerBuyRatio>0.55?'BUYERS DOMINANT':'SELLERS DOMINANT',strength:w});tw+=w}
 
-// 14. Fear & Greed (contrarian)
-const fw=1.8;if(externalData.fearGreed<25){sc+=fw;sigs.push({name:'Fear & Greed ('+externalData.fearGreed+')',signal:'EXTREME FEAR → BULLISH',strength:fw})}else if(externalData.fearGreed>75){sc-=fw;sigs.push({name:'Fear & Greed ('+externalData.fearGreed+')',signal:'EXTREME GREED → BEARISH',strength:fw})}tw+=fw*.3;
+// 14. Fear & Greed — REMOVED (updates daily, useless for 5-min)
 
 // 15. Funding Rate (contrarian)
 if(Math.abs(externalData.fundingRate)>0.01){const w=1.5;if(externalData.fundingRate>0.03){sc-=w;sigs.push({name:'Funding Rate',signal:'HIGH → BEARISH',strength:w})}else if(externalData.fundingRate<-0.01){sc+=w;sigs.push({name:'Funding Rate',signal:'NEGATIVE → BULLISH',strength:w})}tw+=w}
@@ -1040,13 +1091,20 @@ if(pv){
   tw+=w;
 }
 
-// 21. VOLUME PROFILE (Point of Control magnet)
-const vp=volumeProfile(jp,volumes);
-if(vp){
-  const w=2;
-  if(vp.distToPoc>0.03){sc-=w*0.5;sigs.push({name:'Vol Profile',signal:'ABOVE POC → PULL DOWN',strength:w*0.5})}
-  else if(vp.distToPoc<-0.03){sc+=w*0.5;sigs.push({name:'Vol Profile',signal:'BELOW POC → PULL UP',strength:w*0.5})}
-  tw+=w*0.3;
+// 21. Volume Profile — REMOVED (unreliable with browser-limited data)
+
+// ★★★ POLYMARKET ODDS (the market itself is the best predictor) ★★★
+// If Polymarket has Up at 95¢, that's 1000s of traders saying YES with money
+if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
+  const w=6; // Very high weight — this is crowd intelligence with money behind it
+  const upProb=polymarketOdds.upPrice;
+  const bias=(upProb-0.5)*2; // -1 to +1
+  if(Math.abs(bias)>0.1){ // Only use if odds are meaningful (not 50/50)
+    sc+=w*bias;
+    const pct=(upProb*100).toFixed(0);
+    sigs.push({name:'★ Polymarket Odds',signal:'Up '+pct+'¢ / Down '+(100-pct)+'¢'+(upProb>0.7?' → STRONG YES':upProb<0.3?' → STRONG NO':''),strength:w*Math.abs(bias)});
+    tw+=w;
+  }
 }
 
 // 22. ORDER BOOK MOMENTUM (★ recency weighting — last 30s changes)
@@ -1149,14 +1207,17 @@ if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
-const lockAfter=60; // Lock after 60 seconds (1 minute)
+const lockAfter=60; // Max wait before locking
+// Smart lock: lock early if consensus is high (3+ top strategies agree)
+const earlyLockReady=timeInSlot>=30&&pred.signals&&pred.signals.some(s=>s.name.includes('Consensus')&&s.name.includes('3'));
+const shouldLock=timeInSlot>=lockAfter||earlyLockReady;
 let displayWillBeat=pred.willBeat;
 let displayConf=pred.confidence;
 let lockStatus='';
 
 if(!predictionLock.locked){
   // Not locked yet — check if we should lock
-  if(timeInSlot>=lockAfter){
+  if(shouldLock){
     // LOCK IT
     predictionLock.locked=true;
     predictionLock.direction=pred.willBeat;
