@@ -74,7 +74,6 @@ app.post('/api/logout', (req, res) => {
 });
 
 // ─── Polymarket PTB Proxy ───
-// Tries multiple API endpoints to find the exact PTB
 app.get('/api/polymarket-ptb', async (req, res) => {
   try {
     const nowSec = Math.floor(Date.now() / 1000);
@@ -83,93 +82,45 @@ app.get('/api/polymarket-ptb', async (req, res) => {
     for (const ts of [windowTs, windowTs - 300]) {
       const slug = 'btc-updown-5m-' + ts;
       
-      // Method 1: Gamma API events endpoint (includes markets array)
       try {
         const resp = await fetch('https://gamma-api.polymarket.com/events?slug=' + slug);
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data && data.length > 0) {
-            const evt = data[0];
-            const mkt = evt.markets && evt.markets[0];
-            
-            // Dump EVERYTHING to find where PTB hides
-            const fullDump = JSON.stringify(evt);
-            
-            // Search for ANY number in BTC price range in the entire response
-            const allNums = fullDump.match(/\d{4,5}\.\d{1,8}/g) || [];
-            const btcPrices = allNums
-              .map(n => parseFloat(n))
-              .filter(n => n > 50000 && n < 200000);
-            
-            // Get odds
-            let upPrice = null, downPrice = null;
-            if (mkt) {
-              try {
-                const prices = JSON.parse(mkt.outcomePrices || '[]');
-                const outcomes = JSON.parse(mkt.outcomes || '[]');
-                outcomes.forEach((o, i) => {
-                  if (o.toLowerCase().includes('up')) upPrice = parseFloat(prices[i]);
-                  if (o.toLowerCase().includes('down')) downPrice = parseFloat(prices[i]);
-                });
-              } catch(e) {}
-            }
-            
-            return res.json({
-              slug, timestamp: ts,
-              ptb: btcPrices.length > 0 ? btcPrices[0] : null,
-              btcPricesFound: btcPrices,
-              upPrice, downPrice,
-              // Include ALL fields from market object so we can find PTB
-              marketFields: mkt ? Object.keys(mkt) : [],
-              startPrice: mkt?.startPrice,
-              customJsonData: mkt?.customJsonData,
-              resolvedBy: mkt?.resolvedBy,
-              resolverData: mkt?.resolverData,
-              ancillaryData: mkt?.ancillaryData,
-              // First 3000 chars of full dump for debugging
-              fullDump: fullDump.substring(0, 3000)
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        if (!data || !data.length) continue;
+        
+        const evt = data[0];
+        const mkt = evt.markets && evt.markets[0];
+        const fullDump = JSON.stringify(evt);
+        
+        // Search for BTC price range numbers in entire response
+        const allNums = fullDump.match(/\d{4,5}\.\d{1,8}/g) || [];
+        const btcPrices = allNums
+          .map(n => parseFloat(n))
+          .filter(n => n > 50000 && n < 200000);
+        
+        // Get odds
+        let upPrice = null, downPrice = null;
+        if (mkt) {
+          try {
+            const prices = JSON.parse(mkt.outcomePrices || '[]');
+            const outcomes = JSON.parse(mkt.outcomes || '[]');
+            outcomes.forEach((o, i) => {
+              if (o.toLowerCase().includes('up')) upPrice = parseFloat(prices[i]);
+              if (o.toLowerCase().includes('down')) downPrice = parseFloat(prices[i]);
             });
-          }
+          } catch(e) {}
         }
-      } catch(ex) { /* try next */ }
-      
-      // Method 2: Strapi endpoint (older API, might have different fields)
-      try {
-        const resp2 = await fetch('https://strapi-matic.poly.market/events?slug=' + slug);
-        if (resp2.ok) {
-          const data2 = await resp2.json();
-          if (data2 && data2.length > 0) {
-            const fullDump = JSON.stringify(data2[0]);
-            const allNums = fullDump.match(/\d{4,5}\.\d{1,8}/g) || [];
-            const btcPrices = allNums.map(n => parseFloat(n)).filter(n => n > 50000 && n < 200000);
-            
-            return res.json({
-              slug, timestamp: ts, source: 'strapi',
-              ptb: btcPrices.length > 0 ? btcPrices[0] : null,
-              btcPricesFound: btcPrices,
-              fullDump: fullDump.substring(0, 3000)
-            });
-          }
-        }
-      } catch(ex) { /* try next */ }
-      
-      // Method 3: CLOB markets endpoint
-      try {
-        const resp3 = await fetch('https://clob.polymarket.com/markets/' + slug);
-        if (resp3.ok) {
-          const data3 = await resp3.json();
-          const fullDump = JSON.stringify(data3);
-          const allNums = fullDump.match(/\d{4,5}\.\d{1,8}/g) || [];
-          const btcPrices = allNums.map(n => parseFloat(n)).filter(n => n > 50000 && n < 200000);
-          
-          return res.json({
-            slug, timestamp: ts, source: 'clob',
-            ptb: btcPrices.length > 0 ? btcPrices[0] : null,
-            btcPricesFound: btcPrices,
-            fullDump: fullDump.substring(0, 3000)
-          });
-        }
-      } catch(ex) { /* try next */ }
+        
+        return res.json({
+          slug, timestamp: ts,
+          ptb: btcPrices.length > 0 ? btcPrices[0] : null,
+          btcPricesFound: btcPrices,
+          upPrice, downPrice,
+          marketFields: mkt ? Object.keys(mkt) : [],
+          startPrice: mkt?.startPrice || null,
+          fullDump: fullDump.substring(0, 3000)
+        });
+      } catch(ex) { continue; }
     }
     
     res.json({ ptb: null, error: 'No market found' });
