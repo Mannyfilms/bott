@@ -451,12 +451,23 @@ async function fetchPolymarketPTB(){
   }catch(e){console.log('PTB proxy failed:',e);return null}
 }
 
-// Try fetching PTB on load and every new slot
+// Try fetching PTB on load and aggressively at slot boundaries
 let lastPtbFetchSlot=null;
+let ptbFetchAttempts=0;
 async function tryFetchPTB(){
   const nowSec=Math.floor(Date.now()/1000);
   const currentWindow=nowSec-(nowSec%300);
-  if(lastPtbFetchSlot===currentWindow)return;
+  
+  // If we already got PTB for this slot and verified it, stop trying
+  if(lastPtbFetchSlot===currentWindow&&ptbFetchAttempts>=4)return;
+  
+  // New slot detected
+  if(lastPtbFetchSlot!==currentWindow){
+    ptbFetchAttempts=0;
+    lastPtbFetchSlot=currentWindow;
+  }
+  
+  ptbFetchAttempts++;
   
   // Try dedicated PTB endpoint first
   let ptb=await fetchPolymarketPTB();
@@ -472,11 +483,19 @@ async function tryFetchPTB(){
   
   if(ptb&&markets[5]){
     markets[5].priceToBeat=ptb;
-    lastPtbFetchSlot=currentWindow;
-    console.log('PTB set from Polymarket: $'+ptb);
+    console.log('PTB set from Polymarket (attempt '+ptbFetchAttempts+'): $'+ptb);
   }
 }
-setInterval(tryFetchPTB,10000);
+
+// Check every 5 seconds for the first 20 seconds of each slot, then stop
+setInterval(()=>{
+  const nowSec=Math.floor(Date.now()/1000);
+  const secsIntoSlot=nowSec%300;
+  // Only actively fetch in first 20 seconds of each slot
+  if(secsIntoSlot<20||ptbFetchAttempts<4){
+    tryFetchPTB();
+  }
+},5000);
 setTimeout(tryFetchPTB,2000);
 
 // ═══ POLYMARKET ODDS (the market's own prediction) ═══
