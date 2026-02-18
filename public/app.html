@@ -498,9 +498,10 @@ function connectPolyWs(){
           chainlinkTickBuffer.push({price:d.payload.value,ts:tickTs});
           if(chainlinkTickBuffer.length>50)chainlinkTickBuffer.shift();
           
-          // Precision PTB capture: if this tick is within 2 seconds of a slot boundary,
-          // find the tick closest to the exact boundary and use that
-          const nowMs=Date.now();
+          // Precision PTB capture: use the payload timestamp (from Chainlink source)
+          // instead of Date.now() for more accurate boundary detection
+          const tickTs=d.payload.timestamp||Date.now();
+          const nowMs=tickTs; // Use source timestamp, not our clock
           const slotMs=300000;
           const msIntoSlot=nowMs%slotMs;
           if(msIntoSlot<2000&&markets[5]){
@@ -516,8 +517,13 @@ function connectPolyWs(){
               });
               const ptbPrice=bestTick?bestTick.price:d.payload.value;
               markets[5].priceToBeat=ptbPrice;
-              console.log('🎯 PTB from closest tick: $'+ptbPrice.toFixed(2)+' ('+bestDist+'ms from boundary)');
+              console.log('🎯 PTB from closest tick: $'+ptbPrice.toFixed(2)+' ('+bestDist+'ms from boundary, using source timestamp)');
             }
+          }
+          // Also capture ticks just BEFORE the boundary (last 500ms of slot)
+          const msBeforeEnd=slotMs-msIntoSlot;
+          if(msBeforeEnd<500){
+            window._lastPreBoundaryPrice=d.payload.value;
           }
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
           if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
