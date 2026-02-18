@@ -437,6 +437,10 @@ function processChainlinkTick(price, timestamp){
 } // Track which slot we captured PTB for
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
+// This is the SAME data stream Polymarket uses for PTB: https://data.chain.link/streams/btc-usd
+let chainlinkPtbBuffer=[]; // Store ticks with source timestamps for PTB capture
+let lastPtbSlotCaptured=null;
+
 function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
@@ -449,7 +453,7 @@ function connectPolyWs(){
         action:'subscribe',
         subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
       }));
-      console.log('Connected to Polymarket RTDS');
+      console.log('Connected to Polymarket RTDS (Chainlink BTC/USD stream)');
     };
     polyWs.onmessage=function(e){
       try{
@@ -458,13 +462,35 @@ function connectPolyWs(){
           latestChainlinkPrice=d.payload.value;
           latestBtcPrice=d.payload.value;
           
-          // Build candles from Chainlink ticks
-          const tickTs=d.payload.timestamp||Date.now();
-          processChainlinkTick(d.payload.value, tickTs);
+          // Source timestamp from Chainlink (milliseconds)
+          const srcTs=d.payload.timestamp||Date.now();
           
-          // Buffer ticks for precise PTB capture (keep last 10 seconds)
-          chainlinkTickBuffer.push({price:d.payload.value,ts:tickTs});
-          if(chainlinkTickBuffer.length>50)chainlinkTickBuffer.shift();
+          // Build candles from Chainlink ticks
+          processChainlinkTick(d.payload.value, srcTs);
+          
+          // Store tick for PTB capture — keep last 30 seconds worth
+          chainlinkPtbBuffer.push({price:d.payload.value, ts:srcTs});
+          const cutoff=Date.now()-30000;
+          chainlinkPtbBuffer=chainlinkPtbBuffer.filter(t=>t.ts>cutoff);
+          
+          // ═══ PRECISION PTB CAPTURE ═══
+          // Check if this tick crossed a 5-minute boundary
+          const slotMs=300000;
+          const currentSlot=Math.floor(srcTs/slotMs);
+          if(lastPtbSlotCaptured!==currentSlot){
+            // New slot! Find the tick closest to the slot boundary
+            const boundary=currentSlot*slotMs; // exact :00.000
+            let bestTick=null, bestDist=Infinity;
+            chainlinkPtbBuffer.forEach(t=>{
+              const dist=Math.abs(t.ts-boundary);
+              if(dist<bestDist){bestDist=dist;bestTick=t;}
+            });
+            if(bestTick&&markets[5]){
+              markets[5].priceToBeat=bestTick.price;
+              lastPtbSlotCaptured=currentSlot;
+              console.log('🎯 CHAINLINK PTB: $'+bestTick.price.toFixed(2)+' ('+bestDist+'ms from boundary)');
+            }
+          }
           
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
           if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
@@ -1504,11 +1530,14 @@ if(priceHistory.length>500)priceHistory.shift();
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // Use Chainlink price (same as Polymarket) if it's sane, else Binance
-    const chainlinkOk=latestChainlinkPrice&&latestChainlinkPrice>50000&&latestChainlinkPrice<200000&&Math.abs(latestChainlinkPrice-price)<500;
-    const ptbPrice=chainlinkOk?latestChainlinkPrice:price;
-    m.priceToBeat=ptbPrice;
-    console.log('📌 New slot PTB: $'+ptbPrice.toFixed(2)+(chainlinkOk?' (Chainlink)':' (Binance)'));
+    // PTB is set by the Chainlink WebSocket handler (precision capture)
+    // Only set fallback if Chainlink hasn't captured this slot yet
+    if(tf===5&&!m.priceToBeat&&latestChainlinkPrice){
+      m.priceToBeat=latestChainlinkPrice;
+      console.log('📌 PTB fallback (Chainlink current): $'+latestChainlinkPrice.toFixed(2));
+    }else if(tf!==5){
+      m.priceToBeat=latestChainlinkPrice||price;
+    }
   }
 });
 // Track position vs PTB every tick
@@ -1535,7 +1564,7 @@ const price=latestBtcPrice||priceHistory.length?priceHistory[priceHistory.length
 const now=new Date();
 [5,15,60].forEach(tf=>{
   markets[tf].currentSlot=getSlot(tf,now);
-  if(!markets[tf].priceToBeat&&price)markets[tf].priceToBeat=price;
+  if(!markets[tf].priceToBeat&&latestChainlinkPrice)markets[tf].priceToBeat=latestChainlinkPrice;
 });
 document.getElementById('status').textContent='Running — 200+ data points loaded';
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
