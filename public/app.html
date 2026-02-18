@@ -297,7 +297,11 @@ let predictionLock={
 };
 function resetPredictionLock(){
   predictionLock={locked:false,direction:null,lockPrice:null,lockTime:null,lockPtb:null,overrideThreshold:100};
+  ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null};
 }
+
+// Track how long price stays above/below PTB within a slot
+let ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null};
 
 // Per-timeframe market state
 let markets={
@@ -1371,11 +1375,20 @@ const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // secon
 const lockAfter=60; // Wait full 60 seconds for better data
 const shouldLock=timeInSlot>=lockAfter;
 
-// CORE RULE: Use Polymarket odds + Whale tracker + Price vs PTB
+// CORE RULE: Use Polymarket odds + Whale tracker + Price vs PTB + PTB dominance
 let finalPrediction;
 let predSource='';
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
+
+// Track PTB position over time within this slot
+const currentSlotKey=Math.floor(Date.now()/300000);
+if(ptbTracker.lastSlot!==currentSlotKey){
+  ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:currentSlotKey};
+}
+ptbTracker.totalChecks++;
+if(priceAbovePtb)ptbTracker.aboveCount++;
+else ptbTracker.belowCount++;
 
 // Collect signals with SCALED weights (not just binary)
 const signals=[];
@@ -1384,32 +1397,42 @@ const signals=[];
 if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
   const up=polymarketOdds.upPrice;
   const edge=Math.abs(up-0.5); // 0 = no edge, 0.3 = strong edge
-  // Weight scales: 51¢ → 3.2, 55¢ → 4.5, 60¢ → 6, 65¢ → 7.5, 70¢+ → 9+
   const scaledWeight=3+edge*20;
   signals.push({name:'Polymarket ('+Math.round(up*100)+'¢)',dir:up>0.5,weight:scaledWeight});
 }
 
 // 2. WHALE/TOP TRADER — only if they actually have a position this slot
 if(whaleBet.direction&&(Date.now()-whaleBet.lastFetch)<120000){
-  // Scale by their win rate: 50% → 1, 70% → 3, 90% → 5
   const wr=whaleBet.winRate||0.5;
   const whaleWeight=1+Math.max(0,(wr-0.5))*20;
   signals.push({name:'🐋 Top Trader ('+Math.round(wr*100)+'%)',dir:whaleBet.direction==='YES',weight:whaleWeight});
 }
 
-// 3. PRICE vs PTB — scale by gap size (from backtest: >$50 = 81%, >$100 = 90%+)
+// 3. PRICE vs PTB — scale by gap size
 {
-  // $10 gap → weight 1, $50 gap → 4, $100 gap → 6, $200+ → 8
   const gapWeight=Math.min(priceDiff/25,8);
-  if(priceDiff>5){ // Only count if gap is meaningful (>$5)
+  if(priceDiff>5){
     signals.push({name:'Price vs PTB ($'+priceDiff.toFixed(0)+')',dir:priceAbovePtb,weight:gapWeight});
   }
 }
 
-// 4. POLYMARKET ODDS MOMENTUM — if odds shifted since slot start, that's huge
+// 4. PTB DOMINANCE — how long has price been above/below PTB this slot
+// If price has been above PTB for 80%+ of checks, that's a strong UP signal
+if(ptbTracker.totalChecks>=3){
+  const aboveRatio=ptbTracker.aboveCount/ptbTracker.totalChecks;
+  const belowRatio=ptbTracker.belowCount/ptbTracker.totalChecks;
+  const dominance=Math.max(aboveRatio,belowRatio); // 0.5 = even, 1.0 = totally one-sided
+  if(dominance>0.6){ // Only count if clearly dominant
+    // Weight scales: 60% → 1, 75% → 3, 90% → 5, 100% → 6
+    const domWeight=Math.min((dominance-0.5)*12,6);
+    signals.push({name:'PTB Dominance ('+Math.round(dominance*100)+'% '+(aboveRatio>belowRatio?'above':'below')+')',dir:aboveRatio>belowRatio,weight:domWeight});
+  }
+}
+
+// 5. POLYMARKET ODDS MOMENTUM — if odds shifted since slot start, that's huge
 if(polymarketOdds.upPrice&&polymarketOdds.prevUpPrice){
   const shift=polymarketOdds.upPrice-polymarketOdds.prevUpPrice;
-  if(Math.abs(shift)>0.03){ // Odds moved 3¢+
+  if(Math.abs(shift)>0.03){
     signals.push({name:'Odds Shift ('+(shift>0?'+':'')+Math.round(shift*100)+'¢)',dir:shift>0,weight:Math.min(Math.abs(shift)*30,6)});
   }
 }
@@ -1423,19 +1446,13 @@ signals.forEach(s=>{
 finalPrediction=yesWeight>=noWeight;
 predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name+'('+s.weight.toFixed(1)+')').join(' | ');
 
-// CONFIDENCE based on real factors, not 25 noisy signals
-// How lopsided is the vote? And how strong are the signals?
+// CONFIDENCE based on real factors
 const totalWeight=yesWeight+noWeight;
 const voteMargin=totalWeight>0?Math.abs(yesWeight-noWeight)/totalWeight:0;
-// Combine: vote margin (0-1) + Polymarket edge (0-0.3) + gap size factor
 const polyEdge=polymarketOdds.upPrice?Math.abs(polymarketOdds.upPrice-0.5):0;
-const gapFactor=Math.min(priceDiff/200,0.3); // $200 gap maxes this out
+const gapFactor=Math.min(priceDiff/200,0.3);
 const realConfidence=50+((voteMargin*0.5+polyEdge*0.3+gapFactor*0.2)*100);
 const clampedConf=Math.min(realConfidence,92).toFixed(1);
-
-// SKIP LOGIC — much more aggressive
-// Skip if: total signal weight is too low, OR vote is too close, OR Polymarket is near 50/50
-const shouldSkipNew=voteMargin<0.15||(polyEdge<0.03&&priceDiff<20)||totalWeight<3;
 
 let displayWillBeat=finalPrediction;
 let displayConf=clampedConf;
@@ -1444,27 +1461,7 @@ let lockStatus='';
 if(!predictionLock.locked){
   // Not locked yet — check if we should lock
   if(shouldLock){
-    if(shouldSkipNew){ // Low confidence — skip this prediction
-      predictionLock.locked=true;
-      predictionLock.direction=pred.willBeat;
-      predictionLock.lockPrice=price;
-      predictionLock.lockTime=Date.now();
-      predictionLock.lockPtb=ptb;
-      lockStatus='skip';
-      stats.skipped=(stats.skipped||0)+1;
-      // Show SKIP state
-      m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:true};
-      const pb2=document.getElementById('predictionDisplay');pb2.className='pred';pb2.style.background='linear-gradient(135deg,rgba(100,100,50,.15),rgba(80,80,40,.1))';
-      document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:#eab308">⚠️ SKIP</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">Low confidence — no edge</div>';
-      document.getElementById('predictionConfidence').textContent='Signals too mixed';
-      document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);
-      document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
-      document.getElementById('confidenceMeter').style.width='0%';
-      document.getElementById('confPercent').textContent='SKIP';
-      displaySignals(pred.signals);updateCountdown();
-      return;
-    }
-    // LOCK IT — using weighted vote of real signals
+    // LOCK IT — using weighted vote of real signals (no skip)
     predictionLock.locked=true;
     predictionLock.direction=finalPrediction;
     predictionLock.lockPrice=price;
@@ -1473,7 +1470,7 @@ if(!predictionLock.locked){
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
     console.log('🔒 PREDICTION LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | Conf: '+clampedConf+'% | '+predSource);
-    console.log('   YES weight: '+yesWeight.toFixed(1)+' | NO weight: '+noWeight.toFixed(1)+' | Gap: $'+priceDiff.toFixed(0)+' | Skip: '+shouldSkipNew);
+    console.log('   YES weight: '+yesWeight.toFixed(1)+' | NO weight: '+noWeight.toFixed(1)+' | Gap: $'+priceDiff.toFixed(0)+' | PTB dom: '+ptbTracker.aboveCount+'/'+ptbTracker.totalChecks);
   }else{
     // Still analyzing — don't show any prediction yet, just "Analyzing..."
     lockStatus='analyzing';
