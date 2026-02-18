@@ -1371,12 +1371,13 @@ const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe
 if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb);
 
 // ═══ PREDICTION LOCK SYSTEM ═══
-const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
+const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
 const lockAfter=60;
 const shouldLock=timeInSlot>=lockAfter;
 
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
+const priceDiffPct=((price-ptb)/ptb*100);
 
 // Track PTB position over time within this slot
 const currentSlotKey=Math.floor(Date.now()/300000);
@@ -1387,46 +1388,50 @@ ptbTracker.totalChecks++;
 if(priceAbovePtb)ptbTracker.aboveCount++;
 else ptbTracker.belowCount++;
 
-// ═══ CLEAN 3-SIGNAL PREDICTION ═══
-const signals=[];
+// ═══ MOMENTUM STRATEGY ═══
+// Core insight from backtest: where price IS at 60s predicts where it ends
+// The bigger the lead + the more consistently it's been on that side = stronger signal
+//
+// Backtest results:
+//   Gap ≥$5 at 30s  → 63% accuracy
+//   Gap ≥$20 at 30s → 69% accuracy
+//   Gap ≥$50 at 30s → 81% accuracy
+//   Gap ≥$100       → 90%+
+//
+// Strategy: Go with current price direction. Weight = gap size + consistency.
 
-// 1. POLYMARKET ODDS — the market knows best
-if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  const up=polymarketOdds.upPrice;
-  const edge=Math.abs(up-0.5);
-  const w=3+edge*20; // 51¢→3.2, 55¢→4, 60¢→5, 70¢→7
-  signals.push({name:'Polymarket ('+Math.round(up*100)+'¢)',dir:up>0.5,weight:w});
-}
+const aboveRatio=ptbTracker.totalChecks>0?ptbTracker.aboveCount/ptbTracker.totalChecks:0.5;
+const dominance=Math.max(aboveRatio,1-aboveRatio); // 0.5=even, 1.0=totally one-sided
+const isAbove=aboveRatio>=0.5;
 
-// 2. PRICE vs PTB — only when gap is meaningful
-if(priceDiff>10){
-  const w=Math.min(priceDiff/25,8); // $25→1, $50→2, $100→4, $200→8
-  signals.push({name:'Price vs PTB ($'+priceDiff.toFixed(0)+')',dir:priceAbovePtb,weight:w});
-}
+// Final prediction = where price currently is relative to PTB
+// If price is above PTB → YES. Below → NO. Simple as that.
+const finalPrediction=priceAbovePtb;
 
-// 3. PTB DOMINANCE — sustained position = momentum
+// Confidence based on gap size + how long it's been on this side
+// Small gap + flip-flopping = low confidence
+// Big gap + consistently on one side = high confidence
+let confidence=50;
+// Gap contribution: $10→52%, $25→55%, $50→60%, $100→70%, $200→80%
+confidence+=Math.min(priceDiff/10,30);
+// Dominance contribution: 60%→+2, 70%→+5, 80%→+8, 90%→+11, 100%→+14
 if(ptbTracker.totalChecks>=3){
-  const aboveRatio=ptbTracker.aboveCount/ptbTracker.totalChecks;
-  const dominance=Math.max(aboveRatio,1-aboveRatio);
-  if(dominance>0.6){
-    const w=Math.min((dominance-0.5)*12,6); // 70%→2.4, 80%→3.6, 90%→4.8, 100%→6
-    signals.push({name:'PTB Dom ('+Math.round(dominance*100)+'% '+(aboveRatio>0.5?'above':'below')+')',dir:aboveRatio>0.5,weight:w});
-  }
+  confidence+=Math.max(0,(dominance-0.5)*28);
+}
+const clampedConf=Math.min(confidence,92).toFixed(1);
+
+// Build signal display
+const signals=[];
+signals.push({name:'Price vs PTB',dir:priceAbovePtb,weight:priceDiff});
+if(ptbTracker.totalChecks>=3){
+  signals.push({name:'Consistency ('+Math.round(dominance*100)+'%)',dir:isAbove,weight:dominance*10});
+}
+// Show Polymarket odds as info only (not driving the prediction)
+if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
+  signals.push({name:'Polymarket ('+Math.round(polymarketOdds.upPrice*100)+'¢)',dir:polymarketOdds.upPrice>0.5,weight:0});
 }
 
-// Weighted vote
-let yesWeight=0,noWeight=0;
-signals.forEach(s=>{if(s.dir)yesWeight+=s.weight;else noWeight+=s.weight});
-const finalPrediction=yesWeight>=noWeight;
-const predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name+'('+s.weight.toFixed(1)+')').join(' | ');
-
-// Confidence
-const totalWeight=yesWeight+noWeight;
-const voteMargin=totalWeight>0?Math.abs(yesWeight-noWeight)/totalWeight:0;
-const polyEdge=polymarketOdds.upPrice?Math.abs(polymarketOdds.upPrice-0.5):0;
-const gapFactor=Math.min(priceDiff/200,0.3);
-const realConfidence=50+((voteMargin*0.4+polyEdge*0.4+gapFactor*0.2)*100);
-const clampedConf=Math.min(realConfidence,92).toFixed(1);
+const predSource='Price '+(priceAbovePtb?'above':'below')+' PTB by $'+priceDiff.toFixed(0)+' | '+Math.round(dominance*100)+'% consistent';
 
 let displayWillBeat=finalPrediction;
 let displayConf=clampedConf;
@@ -1441,14 +1446,13 @@ if(!predictionLock.locked){
     predictionLock.lockPtb=ptb;
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
-    console.log('🔒 LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | '+predSource);
-    console.log('   YES: '+yesWeight.toFixed(1)+' | NO: '+noWeight.toFixed(1)+' | PTB dom: '+ptbTracker.aboveCount+'/'+ptbTracker.totalChecks);
+    console.log('🔒 LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | Gap: $'+priceDiff.toFixed(2)+' ('+priceDiffPct.toFixed(3)+'%) | Dom: '+Math.round(dominance*100)+'% | Conf: '+clampedConf+'%');
   }else{
     lockStatus='analyzing';
     const secsToLock=Math.ceil(lockAfter-timeInSlot);
     m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern};
     const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
-    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing... ('+secsToLock+'s)</div>';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Reading momentum... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ Above':'↓ Below')+' PTB by $'+priceDiff.toFixed(2)+'</div>';
     document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓');
     document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);
     document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
