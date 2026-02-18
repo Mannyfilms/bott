@@ -397,9 +397,35 @@ function toggleTheme(){
 if(localStorage.getItem('btcTheme')==='light'){document.body.classList.add('light-mode');document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('themeBtn');if(b)b.textContent='🌙 Dark'})}
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
-let lastChainlinkSlot=null; // Track slot changes from Chainlink stream
+let lastChainlinkSlot=null;
+let lastChainlinkPtbSlot=null; // Track which slot we captured PTB for
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
+let ptbCaptureScheduled=false;
+
+// Schedule PTB capture for exact slot boundary
+function schedulePtbCapture(){
+  if(ptbCaptureScheduled)return;
+  const now=Date.now();
+  const slotMs=5*60*1000; // 5 minutes
+  const nextSlotMs=Math.ceil(now/slotMs)*slotMs;
+  const delay=nextSlotMs-now;
+  
+  ptbCaptureScheduled=true;
+  setTimeout(()=>{
+    // Capture the FIRST Chainlink price that arrives at/after slot boundary
+    const capturedPrice=latestChainlinkPrice||latestBtcPrice;
+    if(capturedPrice&&markets[5]){
+      markets[5].priceToBeat=capturedPrice;
+      console.log('⏱️ PTB captured at slot boundary: $'+capturedPrice.toFixed(2));
+    }
+    ptbCaptureScheduled=false;
+    // Schedule the next one
+    setTimeout(schedulePtbCapture,1000);
+  },delay);
+  console.log('PTB capture scheduled in '+(delay/1000).toFixed(1)+'s');
+}
+
 function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
@@ -413,15 +439,30 @@ function connectPolyWs(){
         subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
       }));
       console.log('Connected to Polymarket RTDS');
+      schedulePtbCapture(); // Start precision PTB timing
     };
     polyWs.onmessage=function(e){
       try{
         const d=JSON.parse(e.data);
         if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
           latestChainlinkPrice=d.payload.value;
-          latestBtcPrice=d.payload.value; // Chainlink is primary when available
+          latestBtcPrice=d.payload.value;
+          
+          // Precision PTB capture: if this tick is within 2 seconds of a slot boundary,
+          // use it as the PTB (this is what Polymarket does)
+          const nowMs=Date.now();
+          const slotMs=300000;
+          const msIntoSlot=nowMs%slotMs;
+          if(msIntoSlot<2000&&markets[5]){
+            // We're within 2 seconds of a new slot starting
+            const currentSlot=Math.floor(nowMs/slotMs);
+            if(currentSlot!==lastChainlinkPtbSlot){
+              lastChainlinkPtbSlot=currentSlot;
+              markets[5].priceToBeat=d.payload.value;
+              console.log('🎯 EXACT PTB from Chainlink tick at slot boundary: $'+d.payload.value.toFixed(2)+' ('+msIntoSlot+'ms into slot)');
+            }
+          }
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
-          // Only use Binance if Chainlink hasn't connected yet
           if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
         }
       }catch(ex){}
@@ -446,8 +487,20 @@ async function fetchPolymarketPTB(){
     const r=await fetch('/api/polymarket-ptb');
     const data=await r.json();
     console.log('Polymarket PTB response:',data);
+    // Try ptb field first
     if(data.ptb&&data.ptb>10000)return data.ptb;
+    // Try startPrice
     if(data.startPrice&&parseFloat(data.startPrice)>10000)return parseFloat(data.startPrice);
+    // Try btcPricesFound array (prices extracted from raw response)
+    if(data.btcPricesFound&&data.btcPricesFound.length>0)return data.btcPricesFound[0];
+    // Try extracting from rawDesc ourselves
+    if(data.rawDesc){
+      const m=data.rawDesc.match(/\$([0-9,]+\.\d+)/);
+      if(m){const p=parseFloat(m[1].replace(/,/g,''));if(p>10000)return p}
+      // Also try without dollar sign — just a number in BTC range
+      const m2=data.rawDesc.match(/([0-9]{4,6}\.[0-9]{1,4})/g);
+      if(m2){for(const x of m2){const p=parseFloat(x);if(p>50000&&p<200000)return p}}
+    }
     return null;
   }catch(e){console.log('PTB proxy failed:',e);return null}
 }
