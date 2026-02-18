@@ -1372,12 +1372,9 @@ if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
-const lockAfter=60; // Wait full 60 seconds for better data
+const lockAfter=60;
 const shouldLock=timeInSlot>=lockAfter;
 
-// CORE RULE: Use Polymarket odds + Whale tracker + Price vs PTB + PTB dominance
-let finalPrediction;
-let predSource='';
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
 
@@ -1390,68 +1387,45 @@ ptbTracker.totalChecks++;
 if(priceAbovePtb)ptbTracker.aboveCount++;
 else ptbTracker.belowCount++;
 
-// Collect signals with SCALED weights (not just binary)
+// ═══ CLEAN 3-SIGNAL PREDICTION ═══
 const signals=[];
 
-// 1. POLYMARKET ODDS — strongest signal, scale by how far from 50¢
+// 1. POLYMARKET ODDS — the market knows best
 if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
   const up=polymarketOdds.upPrice;
-  const edge=Math.abs(up-0.5); // 0 = no edge, 0.3 = strong edge
-  const scaledWeight=3+edge*20;
-  signals.push({name:'Polymarket ('+Math.round(up*100)+'¢)',dir:up>0.5,weight:scaledWeight});
+  const edge=Math.abs(up-0.5);
+  const w=3+edge*20; // 51¢→3.2, 55¢→4, 60¢→5, 70¢→7
+  signals.push({name:'Polymarket ('+Math.round(up*100)+'¢)',dir:up>0.5,weight:w});
 }
 
-// 2. WHALE/TOP TRADER — only if they actually have a position this slot
-if(whaleBet.direction&&(Date.now()-whaleBet.lastFetch)<120000){
-  const wr=whaleBet.winRate||0.5;
-  const whaleWeight=1+Math.max(0,(wr-0.5))*20;
-  signals.push({name:'🐋 Top Trader ('+Math.round(wr*100)+'%)',dir:whaleBet.direction==='YES',weight:whaleWeight});
+// 2. PRICE vs PTB — only when gap is meaningful
+if(priceDiff>10){
+  const w=Math.min(priceDiff/25,8); // $25→1, $50→2, $100→4, $200→8
+  signals.push({name:'Price vs PTB ($'+priceDiff.toFixed(0)+')',dir:priceAbovePtb,weight:w});
 }
 
-// 3. PRICE vs PTB — scale by gap size
-{
-  const gapWeight=Math.min(priceDiff/25,8);
-  if(priceDiff>5){
-    signals.push({name:'Price vs PTB ($'+priceDiff.toFixed(0)+')',dir:priceAbovePtb,weight:gapWeight});
-  }
-}
-
-// 4. PTB DOMINANCE — how long has price been above/below PTB this slot
-// If price has been above PTB for 80%+ of checks, that's a strong UP signal
+// 3. PTB DOMINANCE — sustained position = momentum
 if(ptbTracker.totalChecks>=3){
   const aboveRatio=ptbTracker.aboveCount/ptbTracker.totalChecks;
-  const belowRatio=ptbTracker.belowCount/ptbTracker.totalChecks;
-  const dominance=Math.max(aboveRatio,belowRatio); // 0.5 = even, 1.0 = totally one-sided
-  if(dominance>0.6){ // Only count if clearly dominant
-    // Weight scales: 60% → 1, 75% → 3, 90% → 5, 100% → 6
-    const domWeight=Math.min((dominance-0.5)*12,6);
-    signals.push({name:'PTB Dominance ('+Math.round(dominance*100)+'% '+(aboveRatio>belowRatio?'above':'below')+')',dir:aboveRatio>belowRatio,weight:domWeight});
-  }
-}
-
-// 5. POLYMARKET ODDS MOMENTUM — if odds shifted since slot start, that's huge
-if(polymarketOdds.upPrice&&polymarketOdds.prevUpPrice){
-  const shift=polymarketOdds.upPrice-polymarketOdds.prevUpPrice;
-  if(Math.abs(shift)>0.03){
-    signals.push({name:'Odds Shift ('+(shift>0?'+':'')+Math.round(shift*100)+'¢)',dir:shift>0,weight:Math.min(Math.abs(shift)*30,6)});
+  const dominance=Math.max(aboveRatio,1-aboveRatio);
+  if(dominance>0.6){
+    const w=Math.min((dominance-0.5)*12,6); // 70%→2.4, 80%→3.6, 90%→4.8, 100%→6
+    signals.push({name:'PTB Dom ('+Math.round(dominance*100)+'% '+(aboveRatio>0.5?'above':'below')+')',dir:aboveRatio>0.5,weight:w});
   }
 }
 
 // Weighted vote
 let yesWeight=0,noWeight=0;
-signals.forEach(s=>{
-  if(s.dir)yesWeight+=s.weight;
-  else noWeight+=s.weight;
-});
-finalPrediction=yesWeight>=noWeight;
-predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name+'('+s.weight.toFixed(1)+')').join(' | ');
+signals.forEach(s=>{if(s.dir)yesWeight+=s.weight;else noWeight+=s.weight});
+const finalPrediction=yesWeight>=noWeight;
+const predSource=signals.map(s=>(s.dir?'↑':'↓')+s.name+'('+s.weight.toFixed(1)+')').join(' | ');
 
-// CONFIDENCE based on real factors
+// Confidence
 const totalWeight=yesWeight+noWeight;
 const voteMargin=totalWeight>0?Math.abs(yesWeight-noWeight)/totalWeight:0;
 const polyEdge=polymarketOdds.upPrice?Math.abs(polymarketOdds.upPrice-0.5):0;
 const gapFactor=Math.min(priceDiff/200,0.3);
-const realConfidence=50+((voteMargin*0.5+polyEdge*0.3+gapFactor*0.2)*100);
+const realConfidence=50+((voteMargin*0.4+polyEdge*0.4+gapFactor*0.2)*100);
 const clampedConf=Math.min(realConfidence,92).toFixed(1);
 
 let displayWillBeat=finalPrediction;
@@ -1459,9 +1433,7 @@ let displayConf=clampedConf;
 let lockStatus='';
 
 if(!predictionLock.locked){
-  // Not locked yet — check if we should lock
   if(shouldLock){
-    // LOCK IT — using weighted vote of real signals (no skip)
     predictionLock.locked=true;
     predictionLock.direction=finalPrediction;
     predictionLock.lockPrice=price;
@@ -1469,31 +1441,28 @@ if(!predictionLock.locked){
     predictionLock.lockPtb=ptb;
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
-    console.log('🔒 PREDICTION LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | Conf: '+clampedConf+'% | '+predSource);
-    console.log('   YES weight: '+yesWeight.toFixed(1)+' | NO weight: '+noWeight.toFixed(1)+' | Gap: $'+priceDiff.toFixed(0)+' | PTB dom: '+ptbTracker.aboveCount+'/'+ptbTracker.totalChecks);
+    console.log('🔒 LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | '+predSource);
+    console.log('   YES: '+yesWeight.toFixed(1)+' | NO: '+noWeight.toFixed(1)+' | PTB dom: '+ptbTracker.aboveCount+'/'+ptbTracker.totalChecks);
   }else{
-    // Still analyzing — don't show any prediction yet, just "Analyzing..."
     lockStatus='analyzing';
     const secsToLock=Math.ceil(lockAfter-timeInSlot);
-    // Don't update the prediction display — skip to show analyzing state
-    m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
+    m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern};
     const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
-    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing...</div>';
-    document.getElementById('predictionConfidence').textContent='Gathering signals...';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing... ('+secsToLock+'s)</div>';
+    document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓');
     document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);
     document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
     document.getElementById('confidenceMeter').style.width='0%';
     document.getElementById('confPercent').textContent='--';
     displaySignals(pred.signals);updateCountdown();
-    return; // Skip the normal prediction display
+    return;
   }
 }else{
-  // LOCKED — stay with locked prediction, no exceptions
   displayWillBeat=predictionLock.direction;
   lockStatus=' 🔒 LOCKED';
 }
 
-m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
+m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern};
 const pb=document.getElementById('predictionDisplay');pb.className=displayWillBeat?'pred pred-up':'pred pred-dn';
 document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(displayWillBeat?'&#8593; YES':'&#8595; NO')+lockStatus+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(displayWillBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
 document.getElementById('predictionConfidence').textContent='Confidence: '+displayConf+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=displayConf+'%';document.getElementById('confPercent').textContent=displayConf+'%';const cf=parseFloat(displayConf);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
