@@ -1534,7 +1534,6 @@ if(rs){
   signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1});
 }
 if(volumeSpike)signals.push({name:'📊 Vol Spike '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
-if(totalTicks>=3)signals.push({name:'📈 Chart: '+upTicks+'↑ '+downTicks+'↓ ('+(trendSlope>0?'+':'')+trendSlope.toFixed(1)+'$/t)',dir:trendUp,weight:trendStrength*8});
 if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
 signals.push({name:'→ '+strategy,dir:finalPrediction,weight:0});
 
