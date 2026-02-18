@@ -437,29 +437,6 @@ function processChainlinkTick(price, timestamp){
 } // Track which slot we captured PTB for
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
-let ptbCaptureScheduled=false;
-
-// Schedule PTB capture — just grab the current Chainlink price at slot boundary
-function schedulePtbCapture(){
-  if(ptbCaptureScheduled)return;
-  const now=Date.now();
-  const slotMs=300000;
-  const nextSlotMs=Math.ceil(now/slotMs)*slotMs;
-  const delay=nextSlotMs-now;
-  
-  ptbCaptureScheduled=true;
-  setTimeout(()=>{
-    // Simple: just use whatever Chainlink price we have right now
-    const capturedPrice=latestBtcPrice;
-    if(capturedPrice&&markets[5]){
-      markets[5].priceToBeat=capturedPrice;
-      console.log('⏱️ PTB captured at slot boundary: $'+capturedPrice.toFixed(2));
-    }
-    ptbCaptureScheduled=false;
-    setTimeout(schedulePtbCapture,1000);
-  },delay);
-}
-
 function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
@@ -473,7 +450,6 @@ function connectPolyWs(){
         subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
       }));
       console.log('Connected to Polymarket RTDS');
-      schedulePtbCapture(); // Start precision PTB timing
     };
     polyWs.onmessage=function(e){
       try{
@@ -509,76 +485,17 @@ function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/w
 connectPolyWs();
 connectBtcWs();
 
-// ═══ FETCH PTB FROM POLYMARKET (via server proxy) ═══
-async function fetchPolymarketPTB(){
-  try{
-    const r=await fetch('/api/polymarket-ptb');
-    const data=await r.json();
-    console.log('Polymarket PTB response:',data);
-    // Try ptb field first
-    if(data.ptb&&data.ptb>10000)return data.ptb;
-    // Try startPrice
-    if(data.startPrice&&parseFloat(data.startPrice)>10000)return parseFloat(data.startPrice);
-    // Try btcPricesFound array (prices extracted from raw response)
-    if(data.btcPricesFound&&data.btcPricesFound.length>0)return data.btcPricesFound[0];
-    // Try extracting from rawDesc ourselves
-    if(data.rawDesc){
-      const m=data.rawDesc.match(/\$([0-9,]+\.\d+)/);
-      if(m){const p=parseFloat(m[1].replace(/,/g,''));if(p>10000)return p}
-      // Also try without dollar sign — just a number in BTC range
-      const m2=data.rawDesc.match(/([0-9]{4,6}\.[0-9]{1,4})/g);
-      if(m2){for(const x of m2){const p=parseFloat(x);if(p>50000&&p<200000)return p}}
-    }
-    return null;
-  }catch(e){console.log('PTB proxy failed:',e);return null}
-}
+// PTB fetch disabled - API doesn't expose PTB, was returning wrong values
+async function fetchPolymarketPTB(){ return null; }
 
 // Try fetching PTB on load and aggressively at slot boundaries
 let lastPtbFetchSlot=null;
 let ptbFetchAttempts=0;
 async function tryFetchPTB(){
-  const nowSec=Math.floor(Date.now()/1000);
-  const currentWindow=nowSec-(nowSec%300);
-  
-  // If we already got PTB for this slot and verified it, stop trying
-  if(lastPtbFetchSlot===currentWindow&&ptbFetchAttempts>=4)return;
-  
-  // New slot detected
-  if(lastPtbFetchSlot!==currentWindow){
-    ptbFetchAttempts=0;
-    lastPtbFetchSlot=currentWindow;
-  }
-  
-  ptbFetchAttempts++;
-  
-  // Try dedicated PTB endpoint first
-  let ptb=await fetchPolymarketPTB();
-  
-  // If that didn't work, try odds endpoint which also returns PTB
-  if(!ptb){
-    try{
-      const r=await fetch('/api/polymarket-odds');
-      const data=await r.json();
-      if(data.ptb&&data.ptb>10000)ptb=data.ptb;
-    }catch(e){}
-  }
-  
-  if(ptb&&markets[5]){
-    markets[5].priceToBeat=ptb;
-    console.log('PTB set from Polymarket (attempt '+ptbFetchAttempts+'): $'+ptb);
-  }
+  // Disabled - PTB is set from current price at slot change
+  // Server API doesn't have the real PTB
+  return;
 }
-
-// Check every 5 seconds for the first 20 seconds of each slot, then stop
-setInterval(()=>{
-  const nowSec=Math.floor(Date.now()/1000);
-  const secsIntoSlot=nowSec%300;
-  // Only actively fetch in first 20 seconds of each slot
-  if(secsIntoSlot<20||ptbFetchAttempts<4){
-    tryFetchPTB();
-  }
-},5000);
-setTimeout(tryFetchPTB,2000);
 
 // ═══ POLYMARKET ODDS (the market's own prediction) ═══
 let polymarketOdds={upPrice:null,downPrice:null,lastFetch:0};
