@@ -475,17 +475,38 @@ function connectPolyWs(){
           const slotMs=300000;
           const currentSlot=Math.floor(srcTs/slotMs);
           if(lastPtbSlotCaptured!==currentSlot){
-            // New slot! Find the tick closest to the slot boundary
-            const boundary=currentSlot*slotMs; // exact :00.000
-            let bestTick=null, bestDist=Infinity;
+            // New slot! Use the FIRST tick of the new slot as PTB
+            // This is the closest we can get to what Polymarket captures
+            // Also check: do we have a tick from just before the boundary?
+            const boundary=currentSlot*slotMs;
+            
+            // Find last tick BEFORE boundary (previous slot's final price)
+            let lastBefore=null;
+            // Find first tick AFTER boundary (new slot's first price)  
+            let firstAfter=null;
+            
             chainlinkPtbBuffer.forEach(t=>{
-              const dist=Math.abs(t.ts-boundary);
-              if(dist<bestDist){bestDist=dist;bestTick=t;}
+              if(t.ts<boundary){
+                if(!lastBefore||t.ts>lastBefore.ts)lastBefore=t;
+              }else{
+                if(!firstAfter||t.ts<firstAfter.ts)firstAfter=t;
+              }
             });
-            if(bestTick&&markets[5]){
-              markets[5].priceToBeat=bestTick.price;
+            
+            // Use the tick closest to the boundary
+            let ptbTick=null;
+            if(lastBefore&&firstAfter){
+              ptbTick=(boundary-lastBefore.ts)<=(firstAfter.ts-boundary)?lastBefore:firstAfter;
+            }else{
+              ptbTick=lastBefore||firstAfter||{price:d.payload.value,ts:srcTs};
+            }
+            
+            if(ptbTick&&markets[5]){
+              const dist=Math.abs(ptbTick.ts-boundary);
+              const side=ptbTick.ts<boundary?'before':'after';
+              markets[5].priceToBeat=ptbTick.price;
               lastPtbSlotCaptured=currentSlot;
-              console.log('🎯 CHAINLINK PTB: $'+bestTick.price.toFixed(2)+' ('+bestDist+'ms from boundary)');
+              console.log('🎯 CHAINLINK PTB: $'+ptbTick.price.toFixed(2)+' ('+dist+'ms '+side+' boundary)');
             }
           }
           
