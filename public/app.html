@@ -500,7 +500,6 @@ function connectPolyWs(){
           
           // Precision PTB capture: use the payload timestamp (from Chainlink source)
           // instead of Date.now() for more accurate boundary detection
-          const tickTs=d.payload.timestamp||Date.now();
           const nowMs=tickTs; // Use source timestamp, not our clock
           const slotMs=300000;
           const msIntoSlot=nowMs%slotMs;
