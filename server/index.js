@@ -372,6 +372,56 @@ app.get('/api/polymarket-ptb', async (req, res) => {
   }
 });
 
+// ─── Recent Candle Results (last 10 resolved 5-min markets) ───
+let candleCache = { results: [], lastFetch: 0 };
+
+app.get('/api/recent-candles', async (req, res) => {
+  try {
+    // Cache for 60 seconds
+    if (candleCache.results.length && Date.now() - candleCache.lastFetch < 60000) {
+      return res.json({ candles: candleCache.results });
+    }
+    
+    const nowSec = Math.floor(Date.now() / 1000);
+    const results = [];
+    
+    // Check last 10 resolved 5-min slots
+    for (let i = 2; i <= 11; i++) {
+      const slotTs = nowSec - (nowSec % 300) - (i * 300);
+      const slug = 'btc-updown-5m-' + slotTs;
+      
+      try {
+        const resp = await fetch('https://gamma-api.polymarket.com/events?slug=' + slug);
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        if (!data?.length || !data[0].markets?.[0]) continue;
+        
+        const mkt = data[0].markets[0];
+        const outcomes = JSON.parse(mkt.outcomes || '[]');
+        const outcomePrices = JSON.parse(mkt.outcomePrices || '[]');
+        
+        let winner = null;
+        outcomes.forEach((o, idx) => {
+          if (parseFloat(outcomePrices[idx] || 0) > 0.9) winner = o;
+        });
+        
+        if (winner) {
+          results.push({
+            slot: slotTs,
+            result: winner.toLowerCase().includes('up') ? 'UP' : 'DOWN',
+            time: new Date(slotTs * 1000).toISOString()
+          });
+        }
+      } catch(e) { continue; }
+    }
+    
+    candleCache = { results, lastFetch: Date.now() };
+    res.json({ candles: results });
+  } catch(e) {
+    res.json({ candles: [], error: e.message });
+  }
+});
+
 // Fetch Polymarket Up/Down odds for current 5-min BTC market
 app.get('/api/polymarket-odds', async (req, res) => {
   try {
