@@ -450,7 +450,7 @@ function schedulePtbCapture(){
   ptbCaptureScheduled=true;
   setTimeout(()=>{
     // Simple: just use whatever Chainlink price we have right now
-    const capturedPrice=latestChainlinkPrice||latestBtcPrice;
+    const capturedPrice=latestBtcPrice;
     if(capturedPrice&&markets[5]){
       markets[5].priceToBeat=capturedPrice;
       console.log('⏱️ PTB captured at slot boundary: $'+capturedPrice.toFixed(2));
@@ -1567,8 +1567,9 @@ if(priceHistory.length>500)priceHistory.shift();
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // Set PTB from Chainlink price (same source as Polymarket)
-    m.priceToBeat=latestChainlinkPrice||price;
+    // Set PTB from current price (Chainlink if connected, else Binance)
+    m.priceToBeat=price;
+    console.log('📌 New slot PTB set: $'+price.toFixed(2));
     // Try to get exact PTB from Polymarket API
     if(tf===5){
       lastPtbFetchSlot=null;
