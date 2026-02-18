@@ -1302,21 +1302,28 @@ if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
-const lockAfter=30;
-const earlyLockReady=timeInSlot>=20&&pred.signals&&pred.signals.some(s=>s.name.includes('Consensus')&&s.name.includes('3'));
-const shouldLock=timeInSlot>=lockAfter||earlyLockReady;
+const lockAfter=60; // Wait full 60 seconds for better data
+const shouldLock=timeInSlot>=lockAfter;
 
 // CORE RULE: Use Polymarket odds as the primary signal
-// Thousands of traders with real money > any technical indicator
+// But also factor in price vs PTB as confirmation
 let finalPrediction;
 let predSource='';
+const priceAbovePtb=price>ptb;
 if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  // Polymarket odds available — use them
-  finalPrediction=polymarketOdds.upPrice>0.5;
-  predSource='Polymarket (Up '+(polymarketOdds.upPrice*100).toFixed(0)+'¢)';
+  const polyUp=polymarketOdds.upPrice>0.5;
+  // If Polymarket and price vs PTB AGREE → strong signal
+  // If they DISAGREE → use price vs PTB (it's the actual market state)
+  if(polyUp===priceAbovePtb){
+    finalPrediction=polyUp;
+    predSource='Polymarket+Price AGREE ('+(polyUp?'YES':'NO')+')';
+  }else{
+    // Disagree: use price vs PTB since that's the real position
+    finalPrediction=priceAbovePtb;
+    predSource='Price vs PTB ($'+(price-ptb).toFixed(0)+') overrides Polymarket';
+  }
 }else{
-  // Fallback: price vs PTB
-  finalPrediction=price>ptb;
+  finalPrediction=priceAbovePtb;
   predSource='Price vs PTB ($'+(price-ptb).toFixed(2)+')';
 }
 let displayWillBeat=finalPrediction;
