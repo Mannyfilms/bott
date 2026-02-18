@@ -1406,21 +1406,34 @@ if(!ptbTracker.firstPrice)ptbTracker.firstPrice=price;
 const aboveRatio=ptbTracker.totalChecks>0?ptbTracker.aboveCount/ptbTracker.totalChecks:0.5;
 const dominance=Math.max(aboveRatio,1-aboveRatio);
 
+// CHART TREND: count up-ticks vs down-ticks in the stored prices
+let upTicks=0,downTicks=0,trendSlope=0;
+if(ptbTracker.prices.length>=3){
+  for(let i=1;i<ptbTracker.prices.length;i++){
+    if(ptbTracker.prices[i]>ptbTracker.prices[i-1])upTicks++;
+    else if(ptbTracker.prices[i]<ptbTracker.prices[i-1])downTicks++;
+  }
+  // Slope: linear regression over all stored prices (positive = trending up)
+  const n=ptbTracker.prices.length;
+  let sumX=0,sumY=0,sumXY=0,sumX2=0;
+  for(let i=0;i<n;i++){sumX+=i;sumY+=ptbTracker.prices[i];sumXY+=i*ptbTracker.prices[i];sumX2+=i*i}
+  trendSlope=(n*sumXY-sumX*sumY)/(n*sumX2-sumX*sumX); // $/tick
+}
+const totalTicks=upTicks+downTicks;
+const upRatio=totalTicks>0?upTicks/totalTicks:0.5;
+const trendUp=upRatio>0.5;
+const trendStrength=Math.abs(upRatio-0.5)*2; // 0=flat, 1=all one direction
+
 // Calculate velocity: how fast did price move?
-// Compare current price to price from ~30s ago (or earliest we have)
-const lookback=Math.min(ptbTracker.prices.length,6); // ~30s of data at 5s intervals
+const lookback=Math.min(ptbTracker.prices.length,6);
 const earlyPrice=ptbTracker.prices[Math.max(0,ptbTracker.prices.length-lookback)];
-const recentMove=Math.abs(price-earlyPrice); // $ moved in last ~30s
-const totalMove=Math.abs(price-ptb); // total $ from PTB
+const recentMove=Math.abs(price-earlyPrice);
+const totalMove=Math.abs(price-ptb);
 
-// Is this a spike or a drift?
-// Spike: big move concentrated recently (recentMove close to totalMove)
-// Drift: steady move spread over time (recentMove much less than totalMove)
-const spikeRatio=totalMove>5?recentMove/totalMove:0; // 1.0=all recent, 0=gradual
+const spikeRatio=totalMove>5?recentMove/totalMove:0;
 
-// MEAN REVERSION threshold: if gap is large AND it was a spike → fade it
-const isBigGap=priceDiff>40; // $40+ gap
-const isSpike=spikeRatio>0.7; // Most of the move happened recently
+const isBigGap=priceDiff>40;
+const isSpike=spikeRatio>0.7;
 const useReversion=isBigGap&&isSpike;
 
 // RSI REVERSION BOOSTER — overbought/oversold confirms reversion
@@ -1480,8 +1493,19 @@ if((useReversion||useReversionLoose)&&polyAgrees===false){
   finalPrediction=polyUp>0.5;
   strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
 }else if(priceDiff>15&&dominance>0.65){
-  finalPrediction=priceAbovePtb;
-  strategy='MOMENTUM (steady $'+priceDiff.toFixed(0)+', '+Math.round(dominance*100)+'% dom)';
+  // Steady drift + chart trend confirms
+  if(trendStrength>0.3&&trendUp!==priceAbovePtb){
+    // Chart is trending opposite to where price sits — trend reversal
+    finalPrediction=trendUp;
+    strategy='TREND REVERSAL (chart '+Math.round(upRatio*100)+'% up, price '+(priceAbovePtb?'above':'below')+')';
+  }else{
+    finalPrediction=priceAbovePtb;
+    strategy='MOMENTUM ($'+priceDiff.toFixed(0)+', '+Math.round(dominance*100)+'% dom, chart '+Math.round(upRatio*100)+'% up)';
+  }
+}else if(trendStrength>0.2&&totalTicks>=4){
+  // No strong gap/dominance — let chart trend decide
+  finalPrediction=trendUp;
+  strategy='CHART TREND ('+upTicks+'↑ '+downTicks+'↓, slope '+(trendSlope>0?'+':'')+trendSlope.toFixed(1)+')';
 }else{
   finalPrediction=priceAbovePtb;
   strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+' PTB)';
@@ -1495,7 +1519,8 @@ if((useReversion||useReversionLoose)&&polyAgrees===false){
   if(volumeSpike)confidence+=5;
 }
 else if(polyUp&&Math.abs(polyUp-0.5)>0.08)confidence+=Math.abs(polyUp-0.5)*60;
-else if(priceDiff>15&&dominance>0.65)confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20);
+else if(priceDiff>15&&dominance>0.65)confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20)+(trendStrength>0.3?5:0);
+else if(trendStrength>0.2&&totalTicks>=4)confidence+=trendStrength*15;
 else confidence+=2;
 const clampedConf=Math.min(confidence,92).toFixed(1);
 
@@ -1509,6 +1534,7 @@ if(rs){
   signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1});
 }
 if(volumeSpike)signals.push({name:'📊 Vol Spike '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
+if(totalTicks>=3)signals.push({name:'📈 Chart: '+upTicks+'↑ '+downTicks+'↓ ('+(trendSlope>0?'+':'')+trendSlope.toFixed(1)+'$/t)',dir:trendUp,weight:trendStrength*8});
 if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
 signals.push({name:'→ '+strategy,dir:finalPrediction,weight:0});
 
