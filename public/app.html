@@ -297,11 +297,11 @@ let predictionLock={
 };
 function resetPredictionLock(){
   predictionLock={locked:false,direction:null,lockPrice:null,lockTime:null,lockPtb:null,overrideThreshold:100};
-  ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null};
+  ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null,prices:[],firstPrice:null};
 }
 
 // Track how long price stays above/below PTB within a slot
-let ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null};
+let ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null,prices:[],firstPrice:null};
 
 // Per-timeframe market state
 let markets={
@@ -1379,59 +1379,110 @@ const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
 const priceDiffPct=((price-ptb)/ptb*100);
 
-// Track PTB position over time within this slot
+// Track PTB position + velocity over time within this slot
 const currentSlotKey=Math.floor(Date.now()/300000);
 if(ptbTracker.lastSlot!==currentSlotKey){
-  ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:currentSlotKey};
+  ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:currentSlotKey,prices:[],firstPrice:null};
 }
 ptbTracker.totalChecks++;
 if(priceAbovePtb)ptbTracker.aboveCount++;
 else ptbTracker.belowCount++;
+ptbTracker.prices.push(price);
+if(!ptbTracker.firstPrice)ptbTracker.firstPrice=price;
 
-// ═══ MOMENTUM STRATEGY ═══
-// Core insight from backtest: where price IS at 60s predicts where it ends
-// The bigger the lead + the more consistently it's been on that side = stronger signal
+// ═══ HYBRID: MEAN REVERSION + MOMENTUM + POLYMARKET ═══
 //
-// Backtest results:
-//   Gap ≥$5 at 30s  → 63% accuracy
-//   Gap ≥$20 at 30s → 69% accuracy
-//   Gap ≥$50 at 30s → 81% accuracy
-//   Gap ≥$100       → 90%+
+// Mean reversion insight: big fast moves in first 60s tend to reverse
+//   - Price spikes $80 above PTB → likely comes back → bet NO
+//   - Price drops $80 below PTB → likely bounces → bet YES
 //
-// Strategy: Go with current price direction. Weight = gap size + consistency.
+// Momentum insight: steady drift in one direction tends to continue
+//   - Price slowly climbing, consistently above PTB → bet YES
+//
+// Key: SPEED of move matters. Fast spike = reversion. Slow drift = momentum.
+//
+// Polymarket odds: if market disagrees with price direction, trust the market
 
 const aboveRatio=ptbTracker.totalChecks>0?ptbTracker.aboveCount/ptbTracker.totalChecks:0.5;
-const dominance=Math.max(aboveRatio,1-aboveRatio); // 0.5=even, 1.0=totally one-sided
-const isAbove=aboveRatio>=0.5;
+const dominance=Math.max(aboveRatio,1-aboveRatio);
 
-// Final prediction = where price currently is relative to PTB
-// If price is above PTB → YES. Below → NO. Simple as that.
-const finalPrediction=priceAbovePtb;
+// Calculate velocity: how fast did price move?
+// Compare current price to price from ~30s ago (or earliest we have)
+const lookback=Math.min(ptbTracker.prices.length,6); // ~30s of data at 5s intervals
+const earlyPrice=ptbTracker.prices[Math.max(0,ptbTracker.prices.length-lookback)];
+const recentMove=Math.abs(price-earlyPrice); // $ moved in last ~30s
+const totalMove=Math.abs(price-ptb); // total $ from PTB
 
-// Confidence based on gap size + how long it's been on this side
-// Small gap + flip-flopping = low confidence
-// Big gap + consistently on one side = high confidence
-let confidence=50;
-// Gap contribution: $10→52%, $25→55%, $50→60%, $100→70%, $200→80%
-confidence+=Math.min(priceDiff/10,30);
-// Dominance contribution: 60%→+2, 70%→+5, 80%→+8, 90%→+11, 100%→+14
-if(ptbTracker.totalChecks>=3){
-  confidence+=Math.max(0,(dominance-0.5)*28);
+// Is this a spike or a drift?
+// Spike: big move concentrated recently (recentMove close to totalMove)
+// Drift: steady move spread over time (recentMove much less than totalMove)
+const spikeRatio=totalMove>5?recentMove/totalMove:0; // 1.0=all recent, 0=gradual
+
+// MEAN REVERSION threshold: if gap is large AND it was a spike → fade it
+const isBigGap=priceDiff>40; // $40+ gap
+const isSpike=spikeRatio>0.7; // Most of the move happened recently
+const useReversion=isBigGap&&isSpike;
+
+// POLYMARKET SIGNAL: does market agree or disagree with current price direction?
+let polyAgrees=null; // null=no data, true=agrees, false=disagrees
+let polyUp=null;
+if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
+  polyUp=polymarketOdds.upPrice;
+  const marketSaysUp=polyUp>0.52; // Need clear signal, not just 50.1¢
+  const marketSaysDown=polyUp<0.48;
+  if(marketSaysUp||marketSaysDown){
+    polyAgrees=(marketSaysUp===priceAbovePtb);
+  }
 }
+
+// DECISION LOGIC
+let finalPrediction;
+let strategy='';
+
+if(useReversion&&polyAgrees===false){
+  // BIG spike + market disagrees → STRONG mean reversion signal
+  // Price above PTB but market says Down → bet NO
+  finalPrediction=!priceAbovePtb;
+  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+' + market disagrees)';
+}else if(useReversion&&polyAgrees===null){
+  // Big spike, market is neutral → lean reversion but weaker
+  finalPrediction=!priceAbovePtb;
+  strategy='REVERSION (spike $'+priceDiff.toFixed(0)+', market neutral)';
+}else if(useReversion&&polyAgrees===true){
+  // Big spike but market AGREES → momentum wins, market knows something
+  finalPrediction=priceAbovePtb;
+  strategy='MOMENTUM (big gap but market confirms)';
+}else if(polyUp&&Math.abs(polyUp-0.5)>0.08){
+  // No spike, but market has a strong opinion (58¢+ or 42¢-)
+  finalPrediction=polyUp>0.5;
+  strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
+}else if(priceDiff>15&&dominance>0.65){
+  // Steady drift: decent gap + consistently on one side → momentum
+  finalPrediction=priceAbovePtb;
+  strategy='MOMENTUM (steady $'+priceDiff.toFixed(0)+', '+Math.round(dominance*100)+'% dom)';
+}else{
+  // No clear signal → go with price direction as tiebreaker
+  finalPrediction=priceAbovePtb;
+  strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+' PTB)';
+}
+
+// CONFIDENCE
+let confidence=50;
+if(useReversion&&polyAgrees===false)confidence+=20; // Strongest signal
+else if(polyUp&&Math.abs(polyUp-0.5)>0.08)confidence+=Math.abs(polyUp-0.5)*60;
+else if(priceDiff>15&&dominance>0.65)confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20);
+else confidence+=2; // Low edge
 const clampedConf=Math.min(confidence,92).toFixed(1);
 
 // Build signal display
 const signals=[];
-signals.push({name:'Price vs PTB',dir:priceAbovePtb,weight:priceDiff});
-if(ptbTracker.totalChecks>=3){
-  signals.push({name:'Consistency ('+Math.round(dominance*100)+'%)',dir:isAbove,weight:dominance*10});
-}
-// Show Polymarket odds as info only (not driving the prediction)
-if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  signals.push({name:'Polymarket ('+Math.round(polymarketOdds.upPrice*100)+'¢)',dir:polymarketOdds.upPrice>0.5,weight:0});
-}
+signals.push({name:'Gap: $'+priceDiff.toFixed(0)+(priceAbovePtb?' above':' below'),dir:priceAbovePtb,weight:priceDiff/10});
+if(ptbTracker.totalChecks>=3)signals.push({name:'Consistency '+Math.round(dominance*100)+'%',dir:aboveRatio>0.5,weight:dominance*5});
+if(isSpike)signals.push({name:'⚡ Spike detected ('+Math.round(spikeRatio*100)+'%)',dir:!priceAbovePtb,weight:spikeRatio*5});
+if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
+signals.push({name:'Strategy: '+strategy,dir:finalPrediction,weight:0});
 
-const predSource='Price '+(priceAbovePtb?'above':'below')+' PTB by $'+priceDiff.toFixed(0)+' | '+Math.round(dominance*100)+'% consistent';
+const predSource=strategy;
 
 let displayWillBeat=finalPrediction;
 let displayConf=clampedConf;
@@ -1446,13 +1497,13 @@ if(!predictionLock.locked){
     predictionLock.lockPtb=ptb;
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
-    console.log('🔒 LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | Gap: $'+priceDiff.toFixed(2)+' ('+priceDiffPct.toFixed(3)+'%) | Dom: '+Math.round(dominance*100)+'% | Conf: '+clampedConf+'%');
+    console.log('🔒 LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | '+strategy+' | Gap: $'+priceDiff.toFixed(2)+' | Spike: '+Math.round(spikeRatio*100)+'% | Poly: '+(polyUp?Math.round(polyUp*100)+'¢':'--'));
   }else{
     lockStatus='analyzing';
     const secsToLock=Math.ceil(lockAfter-timeInSlot);
     m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern};
     const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
-    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Reading momentum... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ Above':'↓ Below')+' PTB by $'+priceDiff.toFixed(2)+'</div>';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ +$':'↓ -$')+priceDiff.toFixed(0)+' from PTB</div>';
     document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓');
     document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);
     document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
