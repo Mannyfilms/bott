@@ -398,7 +398,43 @@ if(localStorage.getItem('btcTheme')==='light'){document.body.classList.add('ligh
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
 let lastChainlinkSlot=null;
-let lastChainlinkPtbSlot=null; // Track which slot we captured PTB for
+let lastChainlinkPtbSlot=null;
+
+// ═══ CHAINLINK CANDLE BUILDER ═══
+// Builds 5-min candles from Chainlink ticks (same source as Polymarket)
+let chainlinkCandles=[];
+let currentChainlinkCandle=null;
+// Buffer of recent ticks for precise PTB capture
+let chainlinkTickBuffer=[]; // {price, timestamp}
+
+function getChainlinkSlot(ts){return Math.floor(ts/300000)}
+
+function processChainlinkTick(price, timestamp){
+  const slot=getChainlinkSlot(timestamp);
+  
+  if(!currentChainlinkCandle||currentChainlinkCandle.slot!==slot){
+    // Save completed candle
+    if(currentChainlinkCandle&&currentChainlinkCandle.ticks>0){
+      chainlinkCandles.push({
+        time:currentChainlinkCandle.slot*300000,
+        open:currentChainlinkCandle.open,
+        high:currentChainlinkCandle.high,
+        low:currentChainlinkCandle.low,
+        close:currentChainlinkCandle.close,
+        ticks:currentChainlinkCandle.ticks
+      });
+      if(chainlinkCandles.length>100)chainlinkCandles.shift();
+    }
+    // Start new candle
+    currentChainlinkCandle={slot,open:price,high:price,low:price,close:price,ticks:1};
+  }else{
+    // Update current candle
+    currentChainlinkCandle.high=Math.max(currentChainlinkCandle.high,price);
+    currentChainlinkCandle.low=Math.min(currentChainlinkCandle.low,price);
+    currentChainlinkCandle.close=price;
+    currentChainlinkCandle.ticks++;
+  }
+} // Track which slot we captured PTB for
 
 // PRIMARY: Polymarket RTDS WebSocket (Chainlink BTC/USD - exact Polymarket price)
 let ptbCaptureScheduled=false;
@@ -413,11 +449,17 @@ function schedulePtbCapture(){
   
   ptbCaptureScheduled=true;
   setTimeout(()=>{
-    // Capture the FIRST Chainlink price that arrives at/after slot boundary
-    const capturedPrice=latestChainlinkPrice||latestBtcPrice;
+    // Find tick closest to this exact moment (slot boundary)
+    const slotStartMs=Math.round(Date.now()/300000)*300000;
+    let bestTick=null,bestDist=Infinity;
+    chainlinkTickBuffer.forEach(t=>{
+      const dist=Math.abs(t.ts-slotStartMs);
+      if(dist<bestDist){bestDist=dist;bestTick=t}
+    });
+    const capturedPrice=bestTick?bestTick.price:(latestChainlinkPrice||latestBtcPrice);
     if(capturedPrice&&markets[5]){
       markets[5].priceToBeat=capturedPrice;
-      console.log('⏱️ PTB captured at slot boundary: $'+capturedPrice.toFixed(2));
+      console.log('⏱️ Timer PTB: $'+capturedPrice.toFixed(2)+(bestTick?' ('+bestDist+'ms from boundary)':' (fallback)'));
     }
     ptbCaptureScheduled=false;
     // Schedule the next one
@@ -448,18 +490,33 @@ function connectPolyWs(){
           latestChainlinkPrice=d.payload.value;
           latestBtcPrice=d.payload.value;
           
+          // Build candles from Chainlink ticks
+          const tickTs=d.payload.timestamp||Date.now();
+          processChainlinkTick(d.payload.value, tickTs);
+          
+          // Buffer ticks for precise PTB capture (keep last 10 seconds)
+          chainlinkTickBuffer.push({price:d.payload.value,ts:tickTs});
+          if(chainlinkTickBuffer.length>50)chainlinkTickBuffer.shift();
+          
           // Precision PTB capture: if this tick is within 2 seconds of a slot boundary,
-          // use it as the PTB (this is what Polymarket does)
+          // find the tick closest to the exact boundary and use that
           const nowMs=Date.now();
           const slotMs=300000;
           const msIntoSlot=nowMs%slotMs;
           if(msIntoSlot<2000&&markets[5]){
-            // We're within 2 seconds of a new slot starting
             const currentSlot=Math.floor(nowMs/slotMs);
             if(currentSlot!==lastChainlinkPtbSlot){
               lastChainlinkPtbSlot=currentSlot;
-              markets[5].priceToBeat=d.payload.value;
-              console.log('🎯 EXACT PTB from Chainlink tick at slot boundary: $'+d.payload.value.toFixed(2)+' ('+msIntoSlot+'ms into slot)');
+              // Find the tick closest to the slot boundary (slot start = currentSlot * slotMs)
+              const slotStartMs=currentSlot*slotMs;
+              let bestTick=null,bestDist=Infinity;
+              chainlinkTickBuffer.forEach(t=>{
+                const dist=Math.abs(t.ts-slotStartMs);
+                if(dist<bestDist){bestDist=dist;bestTick=t}
+              });
+              const ptbPrice=bestTick?bestTick.price:d.payload.value;
+              markets[5].priceToBeat=ptbPrice;
+              console.log('🎯 PTB from closest tick: $'+ptbPrice.toFixed(2)+' ('+bestDist+'ms from boundary)');
             }
           }
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
@@ -561,8 +618,8 @@ async function fetchPolymarketOdds(){
     if(data.upPrice)polymarketOdds={upPrice:data.upPrice,downPrice:data.downPrice,lastFetch:Date.now()};
   }catch(e){}
 }
-// Fetch every 15 seconds
-setInterval(fetchPolymarketOdds,15000);
+// Fetch every 10 seconds — this is our most valuable signal
+setInterval(fetchPolymarketOdds,10000);
 setTimeout(fetchPolymarketOdds,3000);
 // USDT typically trades at ~$0.9995-1.0005 vs USD
 // Polymarket uses Chainlink BTC/USD, Binance gives BTC/USDT
@@ -617,7 +674,7 @@ async function loadHistoricalData(){
     await fetchOpenInterest();
     await fetchRecentTrades();
     await fetchLongShortRatio();
-    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; 200 candles + order book loaded &middot; 21 strategies online';
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; 200 candles + Chainlink candles &middot; 24 strategies online';
     return true;
   }catch(e){
     console.error('Failed to load historical:',e);
@@ -1163,16 +1220,92 @@ if(pv){
 
 // 21. Volume Profile — REMOVED (unreliable with browser-limited data)
 
+// ★★★ 21A. CHAINLINK CANDLE MOMENTUM (uses exact Polymarket price source) ★★★
+// Analyzes the last 2-6 completed Chainlink 5-min candles
+if(chainlinkCandles.length>=3){
+  const w=5; // High weight — these are from the EXACT Polymarket price source
+  const recent=chainlinkCandles.slice(-6);
+  
+  // Count green vs red candles
+  let greenCount=0,totalMove=0;
+  recent.forEach(c=>{
+    if(c.close>c.open)greenCount++;
+    totalMove+=(c.close-c.open);
+  });
+  const greenPct=greenCount/recent.length;
+  
+  // Strong momentum: mostly green or mostly red
+  if(greenPct>=0.67){
+    const strength=greenPct*1.5;
+    sc+=w*strength;
+    sigs.push({name:'★ CL Candles',signal:greenCount+'/'+recent.length+' GREEN → BULLISH (+$'+totalMove.toFixed(0)+')',strength:w*strength});
+  }else if(greenPct<=0.33){
+    const strength=(1-greenPct)*1.5;
+    sc-=w*strength;
+    sigs.push({name:'★ CL Candles',signal:(recent.length-greenCount)+'/'+recent.length+' RED → BEARISH ($'+totalMove.toFixed(0)+')',strength:w*strength});
+  }else{
+    sigs.push({name:'★ CL Candles',signal:'MIXED ('+greenCount+'/'+recent.length+')',strength:0});
+  }
+  tw+=w;
+  
+  // ★★★ 21B. LAST 2 CANDLE PATTERN (strongest recent signal) ★★★
+  // The last 2 candles are the most predictive for the next 5 min
+  const last=chainlinkCandles[chainlinkCandles.length-1];
+  const prev=chainlinkCandles[chainlinkCandles.length-2];
+  const w2=4;
+  
+  // Recovery pattern: red then green (V-bottom) = strong bullish
+  if(prev.close<prev.open && last.close>last.open){
+    const recoverySize=(last.close-last.open)/(prev.open-prev.close);
+    if(recoverySize>0.5){
+      sc+=w2*Math.min(2,recoverySize);
+      sigs.push({name:'★ CL Pattern',signal:'V-RECOVERY → STRONG BULLISH',strength:w2*Math.min(2,recoverySize)});
+    }
+  }
+  // Dump pattern: green then red (inverted V) = strong bearish
+  else if(prev.close>prev.open && last.close<last.open){
+    const dumpSize=(last.open-last.close)/(prev.close-prev.open);
+    if(dumpSize>0.5){
+      sc-=w2*Math.min(2,dumpSize);
+      sigs.push({name:'★ CL Pattern',signal:'REJECTION → STRONG BEARISH',strength:w2*Math.min(2,dumpSize)});
+    }
+  }
+  // Continuation: both green = momentum
+  else if(prev.close>prev.open && last.close>last.open){
+    sc+=w2;
+    sigs.push({name:'★ CL Pattern',signal:'DOUBLE GREEN → BULLISH CONTINUATION',strength:w2});
+  }
+  // Continuation: both red = momentum
+  else if(prev.close<prev.open && last.close<last.open){
+    sc-=w2;
+    sigs.push({name:'★ CL Pattern',signal:'DOUBLE RED → BEARISH CONTINUATION',strength:w2});
+  }
+  tw+=w2;
+  
+  // ★★★ 21C. CANDLE SIZE ANALYSIS ★★★
+  // Big candles = strong conviction, small candles = indecision
+  const lastSize=Math.abs(last.close-last.open);
+  const avgSize=recent.reduce((a,c)=>a+Math.abs(c.close-c.open),0)/recent.length;
+  if(lastSize>avgSize*2){
+    // Last candle was unusually large — momentum likely continues
+    const dir=last.close>last.open?1:-1;
+    const w3=2;
+    sc+=w3*dir*1.5;
+    sigs.push({name:'CL Big Candle',signal:(dir>0?'BIG GREEN':'BIG RED')+' ('+((lastSize/avgSize)*100).toFixed(0)+'% of avg)',strength:w3*1.5});
+    tw+=w3;
+  }
+}
+
 // ★★★ POLYMARKET ODDS (the market itself is the best predictor) ★★★
 // If Polymarket has Up at 95¢, that's 1000s of traders saying YES with money
 if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  const w=6; // Very high weight — this is crowd intelligence with money behind it
+  const w=12; // HIGHEST weight — crowd intelligence with real money
   const upProb=polymarketOdds.upPrice;
   const bias=(upProb-0.5)*2; // -1 to +1
-  if(Math.abs(bias)>0.1){ // Only use if odds are meaningful (not 50/50)
+  if(Math.abs(bias)>0.05){ // Use even slight odds (not exactly 50/50)
     sc+=w*bias;
     const pct=(upProb*100).toFixed(0);
-    sigs.push({name:'★ Polymarket Odds',signal:'Up '+pct+'¢ / Down '+(100-pct)+'¢'+(upProb>0.7?' → STRONG YES':upProb<0.3?' → STRONG NO':''),strength:w*Math.abs(bias)});
+    sigs.push({name:'★★ Polymarket Odds',signal:'Up '+pct+'¢ / Down '+(100-pct)+'¢'+(upProb>0.7?' → STRONG YES':upProb<0.3?' → STRONG NO':''),strength:w*Math.abs(bias)});
     tw+=w;
   }
 }
@@ -1258,8 +1391,12 @@ if(Object.keys(signalMultipliers).length>0&&sigs.length>3){
   }
 }
 
-const rawConf=Math.abs(sc)/tw*100;const conf=Math.min(78+rawConf/100*19,97);
-return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:cp||detectPat(jp),skip:false,features:feat}}
+const rawConf=Math.abs(sc)/tw*100;
+// Honest confidence: 50% = coin flip, 100% = every signal agrees
+const conf=Math.min(50+rawConf/2,97);
+// Skip if confidence is too low (near coin flip)
+const shouldSkip=conf<58;
+return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:cp||detectPat(jp),skip:shouldSkip,features:feat}}
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){
@@ -1277,9 +1414,9 @@ if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000; // seconds into slot
-const lockAfter=60; // Max wait before locking
-// Smart lock: lock early if consensus is high (3+ top strategies agree)
-const earlyLockReady=timeInSlot>=30&&pred.signals&&pred.signals.some(s=>s.name.includes('Consensus')&&s.name.includes('3'));
+const lockAfter=30; // Lock after 30 seconds (gives 4.5 min to bet)
+// Smart lock: lock early if consensus is high (3+ top strategies agree after 20s)
+const earlyLockReady=timeInSlot>=20&&pred.signals&&pred.signals.some(s=>s.name.includes('Consensus')&&s.name.includes('3'));
 const shouldLock=timeInSlot>=lockAfter||earlyLockReady;
 let displayWillBeat=pred.willBeat;
 let displayConf=pred.confidence;
@@ -1288,7 +1425,27 @@ let lockStatus='';
 if(!predictionLock.locked){
   // Not locked yet — check if we should lock
   if(shouldLock){
-    // LOCK IT
+    if(pred.skip){ // Low confidence — skip this prediction
+      predictionLock.locked=true;
+      predictionLock.direction=pred.willBeat;
+      predictionLock.lockPrice=price;
+      predictionLock.lockTime=Date.now();
+      predictionLock.lockPtb=ptb;
+      lockStatus='skip';
+      stats.skipped=(stats.skipped||0)+1;
+      // Show SKIP state
+      m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:true};
+      const pb2=document.getElementById('predictionDisplay');pb2.className='pred';pb2.style.background='linear-gradient(135deg,rgba(100,100,50,.15),rgba(80,80,40,.1))';
+      document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:#eab308">⚠️ SKIP</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">Low confidence — no edge</div>';
+      document.getElementById('predictionConfidence').textContent='Signals too mixed';
+      document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);
+      document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
+      document.getElementById('confidenceMeter').style.width='0%';
+      document.getElementById('confPercent').textContent='SKIP';
+      displaySignals(pred.signals);updateCountdown();
+      return;
+    }
+    // LOCK IT — we have an edge
     predictionLock.locked=true;
     predictionLock.direction=pred.willBeat;
     predictionLock.lockPrice=price;
