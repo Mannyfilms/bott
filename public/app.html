@@ -1250,7 +1250,7 @@ if(!predictionLock.locked){
     // Don't update the prediction display — skip to show analyzing state
     m.currentPrediction={willBeat:pred.willBeat,confidence:pred.confidence,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,skip:pred.skip};
     const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
-    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing...</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">Locking in '+secsToLock+'s</div>';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing...</div>';
     document.getElementById('predictionConfidence').textContent='Gathering signals...';
     document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);
     document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
@@ -1386,12 +1386,20 @@ if(priceHistory.length>500)priceHistory.shift();
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // Set PTB immediately from current price (will be corrected by Polymarket API)
-    m.priceToBeat=price;
+    // Set PTB from Chainlink (same source as Polymarket) if available, else Binance
+    m.priceToBeat=latestChainlinkPrice||price;
     // Try to get exact PTB from Polymarket API
     if(tf===5){
-      lastPtbFetchSlot=null; // Reset so it fetches for new slot
+      lastPtbFetchSlot=null;
+      ptbFetchAttempts=0;
       tryFetchPTB();
+      // Also re-capture PTB from Chainlink 1-2 seconds after slot change
+      // in case the first tick was stale
+      setTimeout(()=>{
+        if(latestChainlinkPrice&&markets[5]&&!lastPtbFetchSlot){
+          markets[5].priceToBeat=latestChainlinkPrice;
+        }
+      },1500);
     }
   }
 });
