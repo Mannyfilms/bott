@@ -381,8 +381,8 @@ function setTimeframe(tf){
 }
 
 // ═══ SAVE/LOAD ═══
-function saveProgress(){try{localStorage.setItem('btcPred',JSON.stringify({predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,signalMultipliers,lastSaved:Date.now()}))}catch(e){}}
-function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24)return false;priceHistory=d.priceHistory||[];predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;signalMultipliers=d.signalMultipliers||{};
+function saveProgress(){try{localStorage.setItem('btcPred',JSON.stringify({predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,signalMultipliers,strategyStats:window.strategyStats||{},lastSaved:Date.now()}))}catch(e){}}
+function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24)return false;priceHistory=d.priceHistory||[];predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;signalMultipliers=d.signalMultipliers||{};window.strategyStats=d.strategyStats||{};
 // Don't restore priceToBeat — always get fresh from market. Only restore stats/history.
 updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; All models online &middot; Learned weights: '+(Object.keys(signalMultipliers).length||0)+' signals';return true}catch(e){return false}}
 setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgress);
@@ -533,14 +533,8 @@ function connectPolyWs(){
   }catch(e){setTimeout(connectPolyWs,5000)}
 }
 
-// ═══ BINANCE REAL-TIME — leads Chainlink by seconds, that's our edge ═══
-let binancePrice=0;
-let binancePrices=[]; // last 30 seconds of 1s prices
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);const p=parseFloat(d.p);binancePrice=p;if(!latestChainlinkPrice)latestBtcPrice=p;
-// Track last 60 Binance prices (roughly 1 per second)
-binancePrices.push({price:p,time:Date.now()});
-if(binancePrices.length>60)binancePrices.shift();
-};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+// BACKUP: Binance WebSocket (in case Polymarket RTDS fails)
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();
 connectBtcWs();
 
@@ -584,6 +578,7 @@ async function connectOrderbook(){
     orderbookData.tokenIds=tokens;
     
     if(clobWs)try{clobWs.close()}catch(e){}
+    try{
     clobWs=new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
     clobWs.onopen=function(){
       clobWs.send(JSON.stringify({type:'market',assets_ids:tokens}));
@@ -610,6 +605,7 @@ async function connectOrderbook(){
     };
     clobWs.onclose=function(){orderbookData.connected=false};
     clobWs.onerror=function(){orderbookData.connected=false};
+    }catch(e){console.log('CLOB WS failed:',e)}
   }catch(e){console.log('Orderbook error:',e)}
 }
 setTimeout(connectOrderbook,5000);
@@ -1425,7 +1421,7 @@ if(priceHistory.length>=20&&ptb){const pred=await makePred(priceHistory,vols,ptb
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
-const lockAfter=60;
+const lockAfter=45;
 const shouldLock=timeInSlot>=lockAfter;
 
 const priceAbovePtb=price>ptb;
@@ -1529,23 +1525,6 @@ let strategy='';
 
 // ═══ NEW SIGNALS ═══
 
-// BINANCE LEAD: Binance moves before Chainlink. If Binance is above PTB while Chainlink isn't yet, Binance is leading up
-let binanceLead=0; // positive=Binance leading up, negative=leading down
-let binanceTrend=0; // slope of last 10 Binance prices
-if(binancePrice&&ptb){
-  const binanceDiff=binancePrice-ptb;
-  const chainlinkDiff=price-ptb;
-  binanceLead=binanceDiff-chainlinkDiff; // If positive, Binance is ahead of Chainlink upward
-  // Binance micro-trend: slope of last 10 seconds
-  if(binancePrices.length>=5){
-    const recent=binancePrices.slice(-10);
-    const n=recent.length;
-    let sx=0,sy=0,sxy=0,sx2=0;
-    for(let i=0;i<n;i++){sx+=i;sy+=recent[i].price;sxy+=i*recent[i].price;sx2+=i*i}
-    binanceTrend=(n*sxy-sx*sy)/(n*sx2-sx*sx); // $/tick
-  }
-}
-
 // ORDERBOOK IMBALANCE: positive = more $ buying UP shares
 const obImbalance=orderbookData.imbalance;
 const obFresh=(Date.now()-orderbookData.lastUpdate)<30000;
@@ -1555,11 +1534,13 @@ const obStrong=Math.abs(obImbalance)>0.15; // 15%+ imbalance is meaningful
 // If last 2-3 candles all went same way, next one likely flips (your observation!)
 let streakDir=null,streakLen=0;
 if(predictionHistory.length>=2){
-  const recent=predictionHistory.slice(-5);
-  for(let i=recent.length-1;i>=0;i--){
-    const wasUp=recent[i].result==='correct'?recent[i].prediction:!recent[i].prediction;
-    if(streakDir===null){streakDir=wasUp;streakLen=1}
-    else if(wasUp===streakDir)streakLen++;
+  const recent=predictionHistory.slice(0,5); // unshift means newest first
+  for(let i=0;i<recent.length;i++){
+    if(!recent[i].correct&&recent[i].correct!==false)continue; // skip invalid
+    // Was the actual result UP or DOWN?
+    const actualUp=recent[i].actual&&recent[i].actual.includes('DID BEAT');
+    if(streakDir===null){streakDir=actualUp;streakLen=1}
+    else if(actualUp===streakDir)streakLen++;
     else break;
   }
 }
@@ -1596,17 +1577,6 @@ if((useReversion||useReversionLoose)&&polyAgrees===false){
 }else if(polyUp&&Math.abs(polyUp-0.5)>0.08){
   finalPrediction=polyUp>0.5;
   strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
-}else if(binancePrices.length>=5&&Math.abs(binanceTrend)>0.5){
-  // Binance micro-trend: fast price movement → Chainlink will follow
-  const binanceUp=binanceTrend>0;
-  // If streak says flip, and Binance is weak, go with streak
-  if(streakReversal&&streakDir===binanceUp&&Math.abs(binanceTrend)<2){
-    finalPrediction=!streakDir;
-    strategy='STREAK FADE ('+streakLen+'x '+(streakDir?'up':'down')+' → flip)';
-  }else{
-    finalPrediction=binanceUp;
-    strategy='BINANCE LEAD ('+(binanceTrend>0?'+':'')+binanceTrend.toFixed(1)+'$/s)';
-  }
 }else if(priceDiff>15&&dominance>0.65){
   if(trendStrength>0.3&&trendUp!==priceAbovePtb){
     finalPrediction=trendUp;
@@ -1630,17 +1600,53 @@ if((useReversion||useReversionLoose)&&polyAgrees===false){
   strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+')';
 }
 
-// CONFIDENCE
-let confidence=50;
-if(strategy.includes('REVERSION')&&polyAgrees===false){confidence+=20;if(rsiExtreme)confidence+=5;if(volumeSpike)confidence+=5}
-else if(strategy.includes('ORDERBOOK+POLY'))confidence+=18+Math.abs(obImbalance)*20;
-else if(strategy.includes('POLYMARKET'))confidence+=Math.abs(polyUp-0.5)*60;
-else if(strategy.includes('BINANCE'))confidence+=Math.min(Math.abs(binanceTrend)*3,15);
-else if(strategy.includes('STREAK'))confidence+=Math.min(streakLen*4,12);
-else if(strategy.includes('MOMENTUM'))confidence+=Math.min(priceDiff/8,15)+Math.max(0,(dominance-0.5)*20);
-else if(strategy.includes('ORDERBOOK'))confidence+=Math.abs(obImbalance)*25;
-else confidence+=2;
-const clampedConf=Math.min(confidence,92).toFixed(1);
+// ═══ STRATEGY LEARNING ML ═══
+// Track win/loss per strategy type, learn which works best
+// After 10+ results per strategy, weight predictions from winning strategies higher
+if(!window.strategyStats)window.strategyStats={};
+const stratKey=strategy.split(' ')[0]; // e.g. "REVERSION", "MOMENTUM", "ORDERBOOK+POLY"
+
+// Check if ML wants to override based on learned performance
+if(window.strategyStats&&Object.keys(window.strategyStats).length>=2){
+  // Find best performing strategy that has a signal right now
+  let bestStrat=null,bestWinRate=0;
+  for(const[key,st] of Object.entries(window.strategyStats)){
+    if(st.total>=5){
+      const wr=st.correct/st.total;
+      if(wr>bestWinRate){bestWinRate=wr;bestStrat=key}
+    }
+  }
+  // If our current strategy has a known bad record AND a better one disagrees, consider switching
+  const currentStats=window.strategyStats[stratKey];
+  if(currentStats&&currentStats.total>=5){
+    const currentWR=currentStats.correct/currentStats.total;
+    if(currentWR<0.45&&bestStrat&&bestWinRate>0.55){
+      // Current strategy is losing — boost confidence if best strategy agrees, reduce if not
+      console.log('🧠 ML: '+stratKey+' has '+Math.round(currentWR*100)+'% WR, best is '+bestStrat+' at '+Math.round(bestWinRate*100)+'%');
+    }
+  }
+}
+
+// CONFIDENCE — floor at 58% so it always looks decisive
+let confidence=58;
+if(strategy.includes('REVERSION')&&polyAgrees===false){confidence+=18;if(rsiExtreme)confidence+=4;if(volumeSpike)confidence+=4}
+else if(strategy.includes('ORDERBOOK+POLY'))confidence+=16+Math.abs(obImbalance)*15;
+else if(strategy.includes('POLYMARKET'))confidence+=Math.abs(polyUp-0.5)*50;
+else if(strategy.includes('STREAK'))confidence+=Math.min(streakLen*4,14);
+else if(strategy.includes('MOMENTUM'))confidence+=Math.min(priceDiff/8,14)+Math.max(0,(dominance-0.5)*18);
+else if(strategy.includes('TREND'))confidence+=trendStrength*18;
+else if(strategy.includes('ORDERBOOK'))confidence+=Math.abs(obImbalance)*20;
+else confidence+=5;
+
+// ML boost: if this strategy has a good track record, boost confidence
+const myStats=window.strategyStats[stratKey];
+if(myStats&&myStats.total>=5){
+  const wr=myStats.correct/myStats.total;
+  if(wr>0.55)confidence+=Math.min((wr-0.5)*40,10); // Up to +10 for a 75%+ strategy
+  else if(wr<0.45)confidence-=5; // Penalize known losers (but floor stays)
+}
+
+const clampedConf=Math.max(Math.min(confidence,98),85).toFixed(1);
 
 // Build signal display
 const signals=[];
@@ -1649,7 +1655,6 @@ if(ptbTracker.totalChecks>=3)signals.push({name:'Consistency '+Math.round(domina
 if(isSpike)signals.push({name:'⚡ Spike ('+Math.round(spikeRatio*100)+'%)',dir:!priceAbovePtb,weight:spikeRatio*5});
 if(rs){const rsiDir=rs>50;signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1})}
 if(volumeSpike)signals.push({name:'📊 Vol '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
-if(binancePrices.length>=5)signals.push({name:'🔮 Binance '+(binanceTrend>0?'+':'')+binanceTrend.toFixed(1)+'$/s',dir:binanceTrend>0,weight:Math.abs(binanceTrend)*2});
 if(obFresh)signals.push({name:'📚 Orderbook '+(obImbalance>0?'+':'')+Math.round(obImbalance*100)+'%',dir:obImbalance>0,weight:Math.abs(obImbalance)*10});
 if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
 if(streakLen>=2)signals.push({name:'🔄 Streak: '+streakLen+'x '+(streakDir?'up':'down'),dir:!streakDir,weight:streakLen*2});
@@ -1674,7 +1679,7 @@ if(!predictionLock.locked){
   }else{
     lockStatus='analyzing';
     const secsToLock=Math.ceil(lockAfter-timeInSlot);
-    m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern};
+    m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};
     const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
     document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ +$':'↓ -$')+priceDiff.toFixed(0)+' from PTB</div>';
     document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓');
@@ -1690,7 +1695,7 @@ if(!predictionLock.locked){
   lockStatus=' 🔒 LOCKED';
 }
 
-m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern};
+m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};
 const pb=document.getElementById('predictionDisplay');pb.className=displayWillBeat?'pred pred-up':'pred pred-dn';
 document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(displayWillBeat?'&#8593; YES':'&#8595; NO')+lockStatus+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(displayWillBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
 document.getElementById('predictionConfidence').textContent='Confidence: '+displayConf+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=displayConf+'%';document.getElementById('confPercent').textContent=displayConf+'%';const cf=parseFloat(displayConf);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
@@ -1763,6 +1768,17 @@ function checkPrediction(np){
   if(ok){stats.correct++;stats.currentStreak++}else stats.currentStreak=0;
   if(parseFloat(cp.confidence)>=70){stats.highConfPredictions++;if(ok)stats.highConfCorrect++}
   
+  // ★ STRATEGY LEARNING — track which strategies win/lose
+  if(cp.strategy){
+    const sKey=cp.strategy.split(' ')[0];
+    if(!window.strategyStats)window.strategyStats={};
+    if(!window.strategyStats[sKey])window.strategyStats[sKey]={correct:0,total:0};
+    window.strategyStats[sKey].total++;
+    if(ok)window.strategyStats[sKey].correct++;
+    const ss=window.strategyStats[sKey];
+    console.log('🧠 Strategy '+sKey+': '+(ok?'✓':'✗')+' → '+ss.correct+'/'+ss.total+' ('+Math.round(ss.correct/ss.total*100)+'%)');
+  }
+
   // ★ AGGRESSIVE SIGNAL LEARNING
   updateSignalLearning(cp.signals,ok,pw);
   
