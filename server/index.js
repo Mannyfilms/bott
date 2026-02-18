@@ -400,7 +400,10 @@ app.get('/api/polymarket-odds', async (req, res) => {
           const priceMatch = allText.match(/\$([0-9,]+\.\d+)/);
           const ptb = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;
           
-          return res.json({ upPrice, downPrice, ptb, slug });
+          // Include token IDs for orderbook WebSocket
+          const clobTokenIds = mkt.clobTokenIds ? JSON.parse(mkt.clobTokenIds) : [];
+          
+          return res.json({ upPrice, downPrice, ptb, slug, clobTokenIds });
         }
       } catch (ex) { continue; }
     }
