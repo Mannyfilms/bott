@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
-const { verifyCode } = require('./database.js');
+const { verifyCode, isSessionValid } = require('./database.js');
 
 // Start Discord bot
 require('../bot/index.js');
@@ -21,6 +21,15 @@ function requireAuth(req, res, next) {
   
   try {
     const payload = jwt.verify(token, SECRET);
+    
+    // Check if this session is still the active one (not replaced by another login)
+    if (payload.sessionToken && payload.discordId) {
+      if (!isSessionValid(payload.discordId, payload.sessionToken)) {
+        res.clearCookie('session');
+        return res.status(401).json({ error: 'Someone else logged in with your access code. This session has been invalidated.' });
+      }
+    }
+    
     req.user = payload;
     next();
   } catch (e) {
@@ -38,9 +47,9 @@ app.post('/api/verify', (req, res) => {
   const user = verifyCode(code);
   if (!user) return res.status(403).json({ error: 'Invalid or revoked code' });
 
-  // Create JWT session token (7 day expiry)
+  // Create JWT session token (7 day expiry) with unique session ID
   const token = jwt.sign(
-    { discordId: user.discord_id, username: user.discord_username },
+    { discordId: user.discord_id, username: user.discord_username, sessionToken: user.session_token },
     SECRET,
     { expiresIn: '7d' }
   );
