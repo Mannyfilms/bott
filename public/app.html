@@ -630,6 +630,38 @@ async function fetchWhaleTrades(){
 }
 setInterval(fetchWhaleTrades,15000);
 setTimeout(fetchWhaleTrades,3000);
+
+// ═══ RECENT CANDLE HISTORY — last 10 resolved 5-min markets ═══
+let recentCandles={results:[],lastFetch:0,streak:0,streakDir:null};
+async function fetchRecentCandles(){
+  try{
+    const r=await fetch('/api/recent-candles');
+    const data=await r.json();
+    if(data.candles&&data.candles.length){
+      recentCandles.results=data.candles;
+      recentCandles.lastFetch=Date.now();
+      
+      // Calculate streak from actual market results
+      let dir=null,len=0;
+      for(const c of data.candles){
+        const isUp=c.result==='UP';
+        if(dir===null){dir=isUp;len=1}
+        else if(isUp===dir)len++;
+        else break;
+      }
+      recentCandles.streak=len;
+      recentCandles.streakDir=dir;
+      
+      // Count recent distribution
+      const last6=data.candles.slice(0,6);
+      const ups=last6.filter(c=>c.result==='UP').length;
+      const downs=last6.length-ups;
+      console.log('📊 Last '+last6.length+' candles: '+ups+'↑ '+downs+'↓ | Streak: '+len+'x '+(dir?'UP':'DOWN'));
+    }
+  }catch(e){}
+}
+setInterval(fetchRecentCandles,30000); // Every 30s
+setTimeout(fetchRecentCandles,4000);
 // USDT typically trades at ~$0.9995-1.0005 vs USD
 // Polymarket uses Chainlink BTC/USD, Binance gives BTC/USDT
 // We apply a small correction factor when falling back to Binance
@@ -1528,23 +1560,29 @@ let strategy='';
 // ORDERBOOK IMBALANCE: positive = more $ buying UP shares
 const obImbalance=orderbookData.imbalance;
 const obFresh=(Date.now()-orderbookData.lastUpdate)<30000;
-const obStrong=Math.abs(obImbalance)>0.15; // 15%+ imbalance is meaningful
+const obStrong=Math.abs(obImbalance)>0.15;
 
-// STREAK TRACKING: count consecutive same-direction results
-// If last 2-3 candles all went same way, next one likely flips (your observation!)
-let streakDir=null,streakLen=0;
-if(predictionHistory.length>=2){
-  const recent=predictionHistory.slice(0,5); // unshift means newest first
-  for(let i=0;i<recent.length;i++){
-    if(!recent[i].correct&&recent[i].correct!==false)continue; // skip invalid
-    // Was the actual result UP or DOWN?
-    const actualUp=recent[i].actual&&recent[i].actual.includes('DID BEAT');
-    if(streakDir===null){streakDir=actualUp;streakLen=1}
-    else if(actualUp===streakDir)streakLen++;
-    else break;
+// ═══ REAL CANDLE HISTORY from resolved Polymarket markets ═══
+const realStreak=recentCandles.streak||0;
+const realStreakDir=recentCandles.streakDir; // true=UP, false=DOWN
+const realStreakFade=realStreak>=3; // 3+ same direction → fade it
+const candles=recentCandles.results||[];
+
+// Count last 6 candles distribution — if lopsided, lean opposite
+let candleUps=0,candleDowns=0;
+candles.slice(0,6).forEach(c=>{if(c.result==='UP')candleUps++;else candleDowns++});
+const candleBias=candleUps-candleDowns; // positive=mostly UP recently, negative=mostly DOWN
+const candleBiasStrong=Math.abs(candleBias)>=3; // 5-1 or 6-0 split → strong fade signal
+
+// ALTERNATION PATTERN: did the last 4 candles alternate (UP DOWN UP DOWN)?
+let alternating=false;
+if(candles.length>=4){
+  let altCount=0;
+  for(let i=0;i<3;i++){
+    if(candles[i].result!==candles[i+1].result)altCount++;
   }
+  alternating=altCount>=3; // 3 out of 3 alternated
 }
-const streakReversal=streakLen>=3; // 3+ in a row → expect flip
 
 // RSI + volume spike can upgrade reversion conditions
 const rsiExtreme=(rs&&(rs>75||rs<25));
@@ -1563,20 +1601,32 @@ if((useReversion||useReversionLoose)&&polyAgrees===false){
   finalPrediction=priceAbovePtb;
   strategy='MOMENTUM (spike+market agrees)';
 }else if(obFresh&&obStrong&&polyUp&&Math.abs(polyUp-0.5)>0.04){
-  // ORDERBOOK + POLYMARKET agree → very strong signal
   const obSaysUp=obImbalance>0;
   const polySaysUp=polyUp>0.5;
   if(obSaysUp===polySaysUp){
     finalPrediction=obSaysUp;
     strategy='ORDERBOOK+POLY (OB:'+Math.round(obImbalance*100)+'%, Poly:'+Math.round(polyUp*100)+'¢)';
   }else{
-    // Disagree — trust Polymarket (more money at stake)
     finalPrediction=polySaysUp;
-    strategy='POLYMARKET over OB ('+Math.round(polyUp*100)+'¢ vs OB:'+Math.round(obImbalance*100)+'%)';
+    strategy='POLYMARKET over OB';
   }
 }else if(polyUp&&Math.abs(polyUp-0.5)>0.08){
   finalPrediction=polyUp>0.5;
   strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
+}else if(realStreakFade&&priceDiff<30){
+  // 3+ candles same direction + price isn't running away → FADE the streak
+  // This is the key insight: market rarely goes 4+ in a row
+  finalPrediction=!realStreakDir;
+  strategy='CANDLE FADE ('+realStreak+'x '+(realStreakDir?'UP':'DOWN')+' → flip)';
+}else if(alternating&&candles.length>=4){
+  // Pattern: UP DOWN UP DOWN → next should continue the pattern
+  const lastWasUp=candles[0].result==='UP';
+  finalPrediction=!lastWasUp; // Continue alternating
+  strategy='ALTERNATION (last='+(lastWasUp?'UP':'DOWN')+' → '+(lastWasUp?'DOWN':'UP')+')';
+}else if(candleBiasStrong&&priceDiff<20){
+  // Last 6 candles heavily skewed → lean opposite (mean reversion)
+  finalPrediction=candleBias<0; // If mostly DOWN recently → predict UP
+  strategy='CANDLE BIAS ('+candleUps+'↑'+candleDowns+'↓ → fade)';
 }else if(priceDiff>15&&dominance>0.65){
   if(trendStrength>0.3&&trendUp!==priceAbovePtb){
     finalPrediction=trendUp;
@@ -1585,19 +1635,21 @@ if((useReversion||useReversionLoose)&&polyAgrees===false){
     finalPrediction=priceAbovePtb;
     strategy='MOMENTUM ($'+priceDiff.toFixed(0)+')';
   }
-}else if(streakReversal){
-  // 3+ candles same direction → bet the flip
-  finalPrediction=!streakDir;
-  strategy='STREAK FADE ('+streakLen+'x '+(streakDir?'up':'down')+')';
 }else if(trendStrength>0.2&&totalTicks>=4){
   finalPrediction=trendUp;
   strategy='CHART TREND ('+upTicks+'↑ '+downTicks+'↓)';
 }else if(obFresh&&obStrong){
   finalPrediction=obImbalance>0;
-  strategy='ORDERBOOK ('+Math.round(obImbalance*100)+'% imbalance)';
+  strategy='ORDERBOOK ('+Math.round(obImbalance*100)+'%)';
 }else{
-  finalPrediction=priceAbovePtb;
-  strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+')';
+  // DEFAULT: if we have candle data, lean slightly opposite to recent bias
+  if(candles.length>=3&&Math.abs(candleBias)>=2){
+    finalPrediction=candleBias<0;
+    strategy='DEFAULT+BIAS ('+candleUps+'↑'+candleDowns+'↓)';
+  }else{
+    finalPrediction=priceAbovePtb;
+    strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+')';
+  }
 }
 
 // ═══ STRATEGY LEARNING ML ═══
@@ -1632,7 +1684,10 @@ let confidence=58;
 if(strategy.includes('REVERSION')&&polyAgrees===false){confidence+=18;if(rsiExtreme)confidence+=4;if(volumeSpike)confidence+=4}
 else if(strategy.includes('ORDERBOOK+POLY'))confidence+=16+Math.abs(obImbalance)*15;
 else if(strategy.includes('POLYMARKET'))confidence+=Math.abs(polyUp-0.5)*50;
-else if(strategy.includes('STREAK'))confidence+=Math.min(streakLen*4,14);
+else if(strategy.includes('CANDLE FADE'))confidence+=Math.min(realStreak*5,18);
+else if(strategy.includes('ALTERNATION'))confidence+=12;
+else if(strategy.includes('CANDLE BIAS'))confidence+=Math.min(Math.abs(candleBias)*4,14);
+else if(strategy.includes('STREAK'))confidence+=Math.min(realStreak*4,14);
 else if(strategy.includes('MOMENTUM'))confidence+=Math.min(priceDiff/8,14)+Math.max(0,(dominance-0.5)*18);
 else if(strategy.includes('TREND'))confidence+=trendStrength*18;
 else if(strategy.includes('ORDERBOOK'))confidence+=Math.abs(obImbalance)*20;
@@ -1642,8 +1697,8 @@ else confidence+=5;
 const myStats=window.strategyStats[stratKey];
 if(myStats&&myStats.total>=5){
   const wr=myStats.correct/myStats.total;
-  if(wr>0.55)confidence+=Math.min((wr-0.5)*40,10); // Up to +10 for a 75%+ strategy
-  else if(wr<0.45)confidence-=5; // Penalize known losers (but floor stays)
+  if(wr>0.55)confidence+=Math.min((wr-0.5)*40,10);
+  else if(wr<0.45)confidence-=5;
 }
 
 const clampedConf=Math.max(Math.min(confidence,98),85).toFixed(1);
@@ -1655,9 +1710,9 @@ if(ptbTracker.totalChecks>=3)signals.push({name:'Consistency '+Math.round(domina
 if(isSpike)signals.push({name:'⚡ Spike ('+Math.round(spikeRatio*100)+'%)',dir:!priceAbovePtb,weight:spikeRatio*5});
 if(rs){const rsiDir=rs>50;signals.push({name:'RSI '+rs.toFixed(0)+(rs>75?' 🔴OB':rs<25?' 🟢OS':''),dir:rsiDir,weight:rsiExtreme?4:1})}
 if(volumeSpike)signals.push({name:'📊 Vol '+volumeSpikeRatio.toFixed(1)+'x',dir:!priceAbovePtb,weight:3});
-if(obFresh)signals.push({name:'📚 Orderbook '+(obImbalance>0?'+':'')+Math.round(obImbalance*100)+'%',dir:obImbalance>0,weight:Math.abs(obImbalance)*10});
+if(obFresh)signals.push({name:'📚 OB '+(obImbalance>0?'+':'')+Math.round(obImbalance*100)+'%',dir:obImbalance>0,weight:Math.abs(obImbalance)*10});
 if(polyUp)signals.push({name:'Polymarket '+Math.round(polyUp*100)+'¢',dir:polyUp>0.5,weight:Math.abs(polyUp-0.5)*20});
-if(streakLen>=2)signals.push({name:'🔄 Streak: '+streakLen+'x '+(streakDir?'up':'down'),dir:!streakDir,weight:streakLen*2});
+if(candles.length>=3)signals.push({name:'🕯 Last '+Math.min(candles.length,6)+': '+candleUps+'↑'+candleDowns+'↓'+(realStreak>=2?' ('+realStreak+'x '+(realStreakDir?'UP':'DOWN')+')':''),dir:candleBias<0,weight:Math.abs(candleBias)*2});
 signals.push({name:'→ '+strategy,dir:finalPrediction,weight:0});
 
 const predSource=strategy;
