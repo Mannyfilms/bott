@@ -22,12 +22,16 @@ function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, SECRET);
     
-    // Check if this session is still the active one (not replaced by another login)
-    if (payload.sessionToken && payload.discordId) {
-      if (!isSessionValid(payload.discordId, payload.sessionToken)) {
-        res.clearCookie('session');
-        return res.status(401).json({ error: 'Someone else logged in with your access code. This session has been invalidated.' });
-      }
+    // Must have sessionToken (old JWTs without it are invalid)
+    if (!payload.sessionToken || !payload.discordId) {
+      res.clearCookie('session');
+      return res.status(401).json({ error: 'Session expired. Please log in again.' });
+    }
+    
+    // Check if this session is still the active one
+    if (!isSessionValid(payload.discordId, payload.sessionToken)) {
+      res.clearCookie('session');
+      return res.status(401).json({ error: 'Someone else logged in with your access code. This session has been invalidated.' });
     }
     
     req.user = payload;
