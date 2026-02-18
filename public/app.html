@@ -398,14 +398,11 @@ if(localStorage.getItem('btcTheme')==='light'){document.body.classList.add('ligh
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
 let lastChainlinkSlot=null;
-let lastChainlinkPtbSlot=null;
 
 // ═══ CHAINLINK CANDLE BUILDER ═══
 // Builds 5-min candles from Chainlink ticks (same source as Polymarket)
 let chainlinkCandles=[];
 let currentChainlinkCandle=null;
-// Buffer of recent ticks for precise PTB capture
-let chainlinkTickBuffer=[]; // {price, timestamp}
 
 function getChainlinkSlot(ts){return Math.floor(ts/300000)}
 
@@ -510,18 +507,6 @@ function connectPolyWs(){
 function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();
 connectBtcWs();
-
-// PTB fetch disabled - API doesn't expose PTB, was returning wrong values
-async function fetchPolymarketPTB(){ return null; }
-
-// Try fetching PTB on load and aggressively at slot boundaries
-let lastPtbFetchSlot=null;
-let ptbFetchAttempts=0;
-async function tryFetchPTB(){
-  // Disabled - PTB is set from current price at slot change
-  // Server API doesn't have the real PTB
-  return;
-}
 
 // ═══ POLYMARKET ODDS (the market's own prediction) ═══
 let polymarketOdds={upPrice:null,downPrice:null,lastFetch:0};
@@ -1529,15 +1514,20 @@ if(priceHistory.length>500)priceHistory.shift();
     if(tf===selectedTimeframe)resetPredictionLock();
   }
   if(m.currentSlot!==currentSlot){
+    const isFirstDetection=m.currentSlot===null;
     m.currentSlot=currentSlot;
-    // PTB is set by the Chainlink WebSocket handler (precision capture)
-    // Only set fallback if Chainlink hasn't captured this slot yet
-    if(tf===5&&!m.priceToBeat&&latestChainlinkPrice){
-      m.priceToBeat=latestChainlinkPrice;
-      console.log('📌 PTB fallback (Chainlink current): $'+latestChainlinkPrice.toFixed(2));
-    }else if(tf!==5){
-      m.priceToBeat=latestChainlinkPrice||price;
+    // Only set PTB on actual slot CHANGE, not first detection after reload
+    if(!isFirstDetection){
+      // PTB is set by the Chainlink WebSocket handler (precision capture)
+      // Fallback only if WebSocket missed it
+      if(tf===5&&!m.priceToBeat&&latestChainlinkPrice){
+        m.priceToBeat=latestChainlinkPrice;
+        console.log('📌 PTB fallback (Chainlink current): $'+latestChainlinkPrice.toFixed(2));
+      }else if(tf!==5){
+        m.priceToBeat=latestChainlinkPrice||price;
+      }
     }
+    // On first detection (reload), PTB stays null until next boundary
   }
 });
 // Track position vs PTB every tick
