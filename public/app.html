@@ -1306,10 +1306,20 @@ const lockAfter=30;
 const earlyLockReady=timeInSlot>=20&&pred.signals&&pred.signals.some(s=>s.name.includes('Consensus')&&s.name.includes('3'));
 const shouldLock=timeInSlot>=lockAfter||earlyLockReady;
 
-// CORE RULE: if price is above PTB, predict YES. If below, predict NO.
-// This is the simplest and most reliable signal on 5-min timeframes.
-const priceVsPtb=price>ptb;
-let displayWillBeat=priceVsPtb;
+// CORE RULE: Use Polymarket odds as the primary signal
+// Thousands of traders with real money > any technical indicator
+let finalPrediction;
+let predSource='';
+if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
+  // Polymarket odds available — use them
+  finalPrediction=polymarketOdds.upPrice>0.5;
+  predSource='Polymarket (Up '+(polymarketOdds.upPrice*100).toFixed(0)+'¢)';
+}else{
+  // Fallback: price vs PTB
+  finalPrediction=price>ptb;
+  predSource='Price vs PTB ($'+(price-ptb).toFixed(2)+')';
+}
+let displayWillBeat=finalPrediction;
 let displayConf=pred.confidence;
 let lockStatus='';
 
@@ -1336,14 +1346,14 @@ if(!predictionLock.locked){
       displaySignals(pred.signals);updateCountdown();
       return;
     }
-    // LOCK IT — price vs PTB is the primary signal
+    // LOCK IT — using Polymarket odds (or price vs PTB fallback)
     predictionLock.locked=true;
-    predictionLock.direction=priceVsPtb;
+    predictionLock.direction=finalPrediction;
     predictionLock.lockPrice=price;
     predictionLock.lockTime=Date.now();
     predictionLock.lockPtb=ptb;
-    displayWillBeat=priceVsPtb;
-    lockStatus=' 🔒 LOCKED';
+    displayWillBeat=finalPrediction;
+    lockStatus=' 🔒 LOCKED ('+predSource+')';
   }else{
     // Still analyzing — don't show any prediction yet, just "Analyzing..."
     lockStatus='analyzing';
@@ -1487,15 +1497,11 @@ if(priceHistory.length>500)priceHistory.shift();
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // Set PTB from current price (Chainlink if connected, else Binance)
-    m.priceToBeat=price;
-    console.log('📌 New slot PTB set: $'+price.toFixed(2));
-    // Try to get exact PTB from Polymarket API
-    if(tf===5){
-      lastPtbFetchSlot=null;
-      ptbFetchAttempts=0;
-      tryFetchPTB();
-    }
+    // Use Chainlink price (same as Polymarket) if it's sane, else Binance
+    const chainlinkOk=latestChainlinkPrice&&latestChainlinkPrice>50000&&latestChainlinkPrice<200000&&Math.abs(latestChainlinkPrice-price)<500;
+    const ptbPrice=chainlinkOk?latestChainlinkPrice:price;
+    m.priceToBeat=ptbPrice;
+    console.log('📌 New slot PTB: $'+ptbPrice.toFixed(2)+(chainlinkOk?' (Chainlink)':' (Binance)'));
   }
 });
 // Track position vs PTB every tick
