@@ -185,18 +185,11 @@
     <!-- Hidden: JS needs these IDs -->
     <div style="display:none"><span id="sma5"></span><span id="sma10"></span><span id="sma20"></span><span id="ema12"></span><span id="rsi"></span><span id="stochastic"></span><span id="bbUpper"></span><span id="bbLower"></span><span id="macd"></span><span id="atr"></span><span id="volumeTrend"></span><span id="momentum"></span><span id="themeBtn"></span></div>
 
-    <div class="card">
-        <div class="ct">Performance</div>
-        <div class="g6" style="grid-template-columns:repeat(auto-fill,minmax(115px,1fr))">
-            <div class="sbox"><div class="sl">Total</div><div class="sv" id="totalPredictions">0</div></div>
-            <div class="sbox"><div class="sl">Correct</div><div class="sv" style="color:var(--up)" id="correctPredictions">0</div></div>
-            <div class="sbox"><div class="sl">Accuracy</div><div class="sv" id="accuracyRate">--%</div></div>
-            <div class="sbox"><div class="sl">High-Conf</div><div class="sv" id="highConfAccuracy">--%</div></div>
-            <div class="sbox"><div class="sl">Streak</div><div class="sv" id="winStreak">0</div></div>
-            <div class="sbox"><div class="sl">Skipped</div><div class="sv" style="color:var(--tx3)" id="skippedCount">0</div></div>
-        </div>
-        <div style="display:none"><div id="signalPerformance"></div></div>
-        <div style="display:none"><div id="history"></div></div>
+    <!-- Hidden: JS needs these IDs -->
+    <div style="display:none">
+        <span id="totalPredictions"></span><span id="correctPredictions"></span><span id="accuracyRate"></span>
+        <span id="highConfAccuracy"></span><span id="winStreak"></span><span id="skippedCount"></span>
+        <div id="signalPerformance"></div><div id="history"></div>
     </div>
 
     <!-- HOW IT WORKS -->
