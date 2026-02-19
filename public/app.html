@@ -21,9 +21,9 @@
         body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;-webkit-font-smoothing:antialiased}
         body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(247,147,26,.04) 0%,transparent 60%);pointer-events:none;z-index:0}
 
-        .shell{max-width:560px;margin:0 auto;padding:16px 14px;position:relative;z-index:1}
+        .shell{max-width:1100px;margin:0 auto;padding:20px 24px;position:relative;z-index:1}
 
-        .nav{display:flex;align-items:center;gap:12px;padding:12px 0 16px}
+        .nav{display:flex;align-items:center;gap:14px;padding:14px 0 18px}
         .nav-logo{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:1.1em;color:var(--btc);letter-spacing:-.02em}
         .nav-logo span{color:var(--tx3);font-weight:400;font-size:.7em;margin-left:6px;letter-spacing:.08em;text-transform:uppercase}
         .nav-right{margin-left:auto;display:flex;gap:6px;align-items:center}
@@ -115,7 +115,13 @@
             .stats-grid{grid-template-columns:repeat(3,1fr)}
             .sent-grid{grid-template-columns:repeat(2,1fr)}
             .nav{flex-wrap:wrap}.nav-right{width:100%;justify-content:flex-end;flex-wrap:wrap}
+            .desktop-grid{grid-template-columns:1fr}
         }
+
+        /* DESKTOP LAYOUT */
+        .desktop-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+        @media(max-width:768px){.desktop-grid{grid-template-columns:1fr}}
+        .full-width{grid-column:1/-1}
     </style>
 </head>
 <body>
@@ -141,8 +147,8 @@
         <div class="ml-status" id="mlStatus">ML: Initializing</div>
     </div>
 
-    <!-- PRICES -->
-    <div class="card">
+    <!-- PRICES (full width) -->
+    <div class="card" style="margin-bottom:12px">
         <div class="ct">Market</div>
         <div class="price-grid">
             <div class="price-block">
@@ -162,54 +168,64 @@
         </div>
     </div>
 
-    <!-- PREDICTION -->
-    <div class="card">
-        <div class="ct">Prediction</div>
-        <div class="pred-box pred-nu" id="predictionDisplay">
-            <div class="pred-dir" id="predictionValue">—</div>
-            <div class="pred-sub" id="predictionConfidence">—</div>
-            <div style="font-size:.68em;color:var(--tx3);margin-top:4px" id="predictionDetails">—</div>
-        </div>
-        <div class="conf-wrap">
-            <div class="conf-row"><span>Confidence</span><span id="confPercent">—</span></div>
-            <div class="conf-track"><div class="conf-fill" id="confidenceMeter" style="width:0%"></div></div>
-        </div>
-        <div class="ml-row">
-            <div class="ml-card"><h4>LSTM</h4><div class="ml-pred" id="model1Pred">—</div><div class="ml-conf" id="model1Conf">—</div></div>
-            <div class="ml-card"><h4>Technical</h4><div class="ml-pred" id="model2Pred">—</div><div class="ml-conf" id="model2Conf">—</div></div>
-            <div class="ml-card"><h4>Hybrid</h4><div class="ml-pred" id="model3Pred">—</div><div class="ml-conf" id="model3Conf">—</div></div>
-        </div>
-        <div class="pat" id="patternSection"><span id="patternName"></span></div>
-        <div class="sig-wrap"><div class="ct" style="margin-bottom:8px">Signals</div><div id="signalList" style="color:var(--tx3);font-size:.72em">Waiting…</div></div>
-        <div style="text-align:center;margin-top:10px;font-size:.72em;color:var(--tx3)">Next: <span id="nextCheckTime" style="color:var(--btc);font-family:'JetBrains Mono',monospace;font-weight:600">—</span></div>
-    </div>
+    <div class="desktop-grid">
+        <!-- LEFT COLUMN: Prediction -->
+        <div>
+            <div class="card">
+                <div class="ct">Prediction</div>
+                <div class="pred-box pred-nu" id="predictionDisplay">
+                    <div class="pred-dir" id="predictionValue">—</div>
+                    <div class="pred-sub" id="predictionConfidence">—</div>
+                    <div style="font-size:.68em;color:var(--tx3);margin-top:4px" id="predictionDetails">—</div>
+                </div>
+                <div class="conf-wrap">
+                    <div class="conf-row"><span>Confidence</span><span id="confPercent">—</span></div>
+                    <div class="conf-track"><div class="conf-fill" id="confidenceMeter" style="width:0%"></div></div>
+                </div>
+                <div class="ml-row">
+                    <div class="ml-card"><h4>LSTM</h4><div class="ml-pred" id="model1Pred">—</div><div class="ml-conf" id="model1Conf">—</div></div>
+                    <div class="ml-card"><h4>Technical</h4><div class="ml-pred" id="model2Pred">—</div><div class="ml-conf" id="model2Conf">—</div></div>
+                    <div class="ml-card"><h4>Hybrid</h4><div class="ml-pred" id="model3Pred">—</div><div class="ml-conf" id="model3Conf">—</div></div>
+                </div>
+                <div class="pat" id="patternSection"><span id="patternName"></span></div>
+                <div class="sig-wrap"><div class="ct" style="margin-bottom:8px">Signals</div><div id="signalList" style="color:var(--tx3);font-size:.72em">Waiting…</div></div>
+                <div style="text-align:center;margin-top:10px;font-size:.72em;color:var(--tx3)">Next: <span id="nextCheckTime" style="color:var(--btc);font-family:'JetBrains Mono',monospace;font-weight:600">—</span></div>
+            </div>
 
-    <!-- SENTIMENT -->
-    <div class="card">
-        <div class="ct">Sentiment</div>
-        <div class="sent-grid">
-            <div class="sent-chip"><div class="cl">Fear/Greed</div><div class="cv" id="fearGreed">—</div></div>
-            <div class="sent-chip"><div class="cl">Sentiment</div><div class="cv" id="sentiment">—</div></div>
-            <div class="sent-chip"><div class="cl">Dominance</div><div class="cv" id="btcDominance">—</div></div>
-            <div class="sent-chip"><div class="cl">Funding</div><div class="cv" id="fundingRate">—</div></div>
-            <div class="sent-chip"><div class="cl">Flows</div><div class="cv" id="exchangeFlow">—</div></div>
-            <div class="sent-chip"><div class="cl">Whales</div><div class="cv" id="whaleActivity">—</div></div>
+            <!-- SENTIMENT -->
+            <div class="card">
+                <div class="ct">Sentiment</div>
+                <div class="sent-grid">
+                    <div class="sent-chip"><div class="cl">Fear/Greed</div><div class="cv" id="fearGreed">—</div></div>
+                    <div class="sent-chip"><div class="cl">Sentiment</div><div class="cv" id="sentiment">—</div></div>
+                    <div class="sent-chip"><div class="cl">Dominance</div><div class="cv" id="btcDominance">—</div></div>
+                    <div class="sent-chip"><div class="cl">Funding</div><div class="cv" id="fundingRate">—</div></div>
+                    <div class="sent-chip"><div class="cl">Flows</div><div class="cv" id="exchangeFlow">—</div></div>
+                    <div class="sent-chip"><div class="cl">Whales</div><div class="cv" id="whaleActivity">—</div></div>
+                </div>
+            </div>
         </div>
-    </div>
 
-    <!-- STATS -->
-    <div class="card">
-        <div class="ct">Performance</div>
-        <div class="stats-grid">
-            <div class="stat"><div class="stat-label">Total</div><div class="stat-val" id="totalPredictions">0</div></div>
-            <div class="stat"><div class="stat-label">Correct</div><div class="stat-val" style="color:var(--up)" id="correctPredictions">0</div></div>
-            <div class="stat"><div class="stat-label">Accuracy</div><div class="stat-val" id="accuracyRate">—</div></div>
-            <div class="stat"><div class="stat-label">High Conf</div><div class="stat-val" id="highConfAccuracy">—</div></div>
-            <div class="stat"><div class="stat-label">Streak</div><div class="stat-val" id="winStreak">0</div></div>
-            <div class="stat"><div class="stat-label">Skipped</div><div class="stat-val" style="color:var(--tx3)" id="skippedCount">0</div></div>
+        <!-- RIGHT COLUMN: Stats + History -->
+        <div>
+            <div class="card">
+                <div class="ct">Performance</div>
+                <div class="stats-grid">
+                    <div class="stat"><div class="stat-label">Total</div><div class="stat-val" id="totalPredictions">0</div></div>
+                    <div class="stat"><div class="stat-label">Correct</div><div class="stat-val" style="color:var(--up)" id="correctPredictions">0</div></div>
+                    <div class="stat"><div class="stat-label">Accuracy</div><div class="stat-val" id="accuracyRate">—</div></div>
+                    <div class="stat"><div class="stat-label">High Conf</div><div class="stat-val" id="highConfAccuracy">—</div></div>
+                    <div class="stat"><div class="stat-label">Streak</div><div class="stat-val" id="winStreak">0</div></div>
+                    <div class="stat"><div class="stat-label">Skipped</div><div class="stat-val" style="color:var(--tx3)" id="skippedCount">0</div></div>
+                </div>
+                <div class="perf"><div class="ct" style="margin-top:10px">Signal Performance</div><div id="signalPerformance" style="color:var(--tx3);text-align:center;font-size:.72em">Collecting…</div></div>
+            </div>
+
+            <div class="card">
+                <div class="ct">History</div>
+                <div class="hist" id="history"><div style="text-align:center;padding:14px;color:var(--tx3);font-size:.72em">No predictions yet</div></div>
+            </div>
         </div>
-        <div class="perf"><div class="ct" style="margin-top:10px">Signal Performance</div><div id="signalPerformance" style="color:var(--tx3);text-align:center;font-size:.72em">Collecting…</div></div>
-        <div style="margin-top:10px"><div class="ct">History</div><div class="hist" id="history"><div style="text-align:center;padding:14px;color:var(--tx3);font-size:.72em">No predictions yet</div></div></div>
     </div>
 
     <!-- HIDDEN: Technical indicator elements needed by JS but not displayed -->
@@ -358,14 +374,8 @@ setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgres
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
 
 // Theme toggle
-function toggleTheme(){
-  document.body.classList.toggle('light-mode');
-  const isLight=document.body.classList.contains('light-mode');
-  document.getElementById('themeBtn').textContent=isLight?'🌙 Dark':'☀️ Light';
-  localStorage.setItem('btcTheme',isLight?'light':'dark');
-}
-// Load saved theme
-if(localStorage.getItem('btcTheme')==='light'){document.body.classList.add('light-mode');document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('themeBtn');if(b)b.textContent='🌙 Dark'})}
+function toggleTheme(){}
+// Dark mode only
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
 let lastChainlinkSlot=null;
