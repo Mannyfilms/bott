@@ -129,7 +129,6 @@
         <div class="nav-mark">&#8383;</div>
         <div class="nav-text"><h1>BTC Prediction</h1><span>5-Minute Forecasts &middot; Chainlink BTC/USD (Polymarket Source)</span></div>
         <div class="nav-right">
-            <button class="theme-toggle" onclick="toggleTheme()" id="themeBtn">☀️ Light</button>
             <span class="nav-user" id="userGreeting"></span>
             <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
             <button class="btn btn-g" id="stopBtn" onclick="stopPredictions()" disabled>Stop</button>
@@ -184,7 +183,7 @@
     </div>
 
     <!-- Hidden: JS needs these IDs -->
-    <div style="display:none"><span id="sma5"></span><span id="sma10"></span><span id="sma20"></span><span id="ema12"></span><span id="rsi"></span><span id="stochastic"></span><span id="bbUpper"></span><span id="bbLower"></span><span id="macd"></span><span id="atr"></span><span id="volumeTrend"></span><span id="momentum"></span></div>
+    <div style="display:none"><span id="sma5"></span><span id="sma10"></span><span id="sma20"></span><span id="ema12"></span><span id="rsi"></span><span id="stochastic"></span><span id="bbUpper"></span><span id="bbLower"></span><span id="macd"></span><span id="atr"></span><span id="volumeTrend"></span><span id="momentum"></span><span id="themeBtn"></span></div>
 
     <div class="card">
         <div class="ct">Performance</div>
@@ -197,7 +196,7 @@
             <div class="sbox"><div class="sl">Skipped</div><div class="sv" style="color:var(--tx3)" id="skippedCount">0</div></div>
         </div>
         <div style="display:none"><div id="signalPerformance"></div></div>
-        <div style="margin-top:14px"><div class="ct">History</div><div class="hist" id="history"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:.8em">No predictions yet</div></div></div>
+        <div style="display:none"><div id="history"></div></div>
     </div>
 
     <!-- HOW IT WORKS -->
@@ -376,14 +375,7 @@ setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgres
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
 
 // Theme toggle
-function toggleTheme(){
-  document.body.classList.toggle('light-mode');
-  const isLight=document.body.classList.contains('light-mode');
-  document.getElementById('themeBtn').textContent=isLight?'🌙 Dark':'☀️ Light';
-  localStorage.setItem('btcTheme',isLight?'light':'dark');
-}
-// Load saved theme
-if(localStorage.getItem('btcTheme')==='light'){document.body.classList.add('light-mode');document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('themeBtn');if(b)b.textContent='🌙 Dark'})}
+function toggleTheme(){}
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
 let lastChainlinkSlot=null;
