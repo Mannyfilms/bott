@@ -465,7 +465,12 @@ app.get('/api/polymarket-odds', async (req, res) => {
 
 // ─── Serve Frontend ───
 
-// Protected app page
+// Free tier page (1-hour predictor, no auth needed) - MUST be before static
+app.get('/free', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'free.html'));
+});
+
+// Protected app page (5-min predictor)
 app.get('/app', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'app.html'));
 });
