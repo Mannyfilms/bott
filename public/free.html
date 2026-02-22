@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>BTC Oracle — Free</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#08090d;--sf:#13151c;--sf2:#1a1c25;--bd:rgba(255,255,255,.06);--tx:#edeef2;--tx2:#a0a5b8;--tx3:#5d6277;--btc:#f7931a;--up:#22c55e;--dn:#ff4757;--rs:12px}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;-webkit-font-smoothing:antialiased}
+        .shell{max-width:680px;margin:0 auto;padding:20px}
+        .nav{display:flex;align-items:center;gap:14px;padding:14px 0;margin-bottom:10px}
+        .nav-mark{font-size:1.5em;color:var(--btc)}
+        .nav-text h1{font-size:1em;font-weight:600;letter-spacing:-.01em}
+        .nav-text span{font-size:.68em;color:var(--tx3)}
+        .nav-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+        .btn{padding:6px 14px;border:none;border-radius:8px;font-size:.72em;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+        .btn-btc{background:linear-gradient(140deg,var(--btc),#e07c0e);color:#fff;box-shadow:0 4px 16px rgba(247,147,26,.2)}
+        .btn-btc:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(247,147,26,.3)}
+        .disc{font-size:.68em;color:var(--tx3);padding:8px 14px;background:var(--sf);border-radius:10px;margin-bottom:14px;border:1px solid var(--bd);display:flex;align-items:center;gap:8px}
+        .badge{display:inline-block;background:rgba(34,197,94,.1);color:var(--up);font-size:.62em;font-weight:700;padding:2px 8px;border-radius:6px;letter-spacing:.08em;margin-left:8px}
+        .card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);padding:20px;margin-bottom:12px}
+        .ct{font-size:.65em;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--tx3);margin-bottom:14px}
+        .g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+        .plbl{font-size:.65em;text-transform:uppercase;letter-spacing:.1em;color:var(--tx3);margin-bottom:4px}
+        .pbig{font-family:'JetBrains Mono',monospace;font-size:1.8em;font-weight:700}
+        .psub{font-size:.7em;color:var(--tx3)}
+        .vs{text-align:center;padding:10px;background:var(--sf2);border-radius:8px;margin-top:12px}
+        .vsl{font-size:.62em;color:var(--tx3);text-transform:uppercase;letter-spacing:.1em}
+        .vsv{font-family:'JetBrains Mono',monospace;font-size:1em;font-weight:700;margin-top:2px}
+        .pred{border-radius:var(--rs);padding:28px 20px;text-align:center;transition:all .3s}
+        .pred-up{background:linear-gradient(135deg,rgba(34,197,94,.08),rgba(34,197,94,.02));border:1px solid rgba(34,197,94,.12)}
+        .pred-dn{background:linear-gradient(135deg,rgba(255,71,87,.08),rgba(255,71,87,.02));border:1px solid rgba(255,71,87,.12)}
+        .pred-nu{background:var(--sf2);border:1px solid var(--bd)}
+        .val{font-size:2.2em;font-weight:700}
+        .conf{font-size:.82em;color:var(--tx2);margin-top:4px}
+        .cftrack{height:5px;background:var(--sf2);border-radius:3px;overflow:hidden;margin-top:12px}
+        .cffill{height:100%;border-radius:3px;transition:width .5s ease}
+        .cflbl{display:flex;justify-content:space-between;font-size:.7em;color:var(--tx2);margin-top:14px;margin-bottom:4px}
+        .status{font-size:.82em;color:var(--tx2);padding:10px 0;text-align:center}
+        .countdown{font-family:'JetBrains Mono',monospace;font-size:1.5em;font-weight:700;color:var(--btc);text-align:center;margin:12px 0}
+        .sig{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;margin:3px 0;background:var(--sf2);border-radius:6px;font-size:.75em;border-left:3px solid var(--bd)}
+        .sig-u{border-left-color:var(--up)}.sig-d{border-left-color:var(--dn)}
+        .upgrade{background:linear-gradient(135deg,rgba(247,147,26,.06),rgba(247,147,26,.02));border:1.5px solid rgba(247,147,26,.15);border-radius:var(--rs);padding:20px;text-align:center;margin-top:14px}
+        .upgrade h3{color:var(--btc);font-size:.95em;margin-bottom:4px}
+        .upgrade p{font-size:.78em;color:var(--tx3);margin-bottom:12px}
+        .echip{background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px 14px;text-align:center}
+        .echip .cl{font-size:.6em;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+        .echip .cv{font-family:'JetBrains Mono',monospace;font-size:.88em;font-weight:600}
+        .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+        @media(max-width:500px){.shell{padding:12px}.pbig{font-size:1.4em}.val{font-size:1.8em}}
+    </style>
+</head>
+<body>
+<div class="shell">
+    <nav class="nav">
+        <div class="nav-mark">&#8383;</div>
+        <div class="nav-text"><h1>BTC Oracle<span class="badge">FREE</span></h1><span>1-Hour Predictions &middot; Chainlink BTC/USD</span></div>
+        <div class="nav-right">
+            <button class="btn btn-btc" onclick="window.location.href='/'">Upgrade to 5-Min</button>
+        </div>
+    </nav>
+
+    <div class="disc">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Free tier — predictions every 1 hour. Not financial advice.
+    </div>
+
+    <div class="card">
+        <div class="ct">Market</div>
+        <div class="status" id="status">Loading...</div>
+        <div class="g2" style="margin-top:12px">
+            <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbTime">Set at hour mark</div></div>
+            <div style="text-align:center"><div class="plbl">Current BTC</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
+        </div>
+        <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
+    </div>
+
+    <div class="card">
+        <div class="ct">Prediction</div>
+        <div class="pred pred-nu" id="predDisplay">
+            <div class="val" id="predValue">--</div>
+            <div class="conf" id="predConf">Waiting for data...</div>
+        </div>
+        <div><div class="cflbl"><span>Confidence</span><span id="confPct">0%</span></div><div class="cftrack"><div class="cffill" id="confBar" style="width:0%"></div></div></div>
+        <div style="text-align:center;margin-top:14px">
+            <div class="plbl">Next prediction</div>
+            <div class="countdown" id="countdown">--:--</div>
+        </div>
+        <div style="margin-top:14px"><div class="ct">Signals</div><div id="signals" style="color:var(--tx3);font-size:.78em">Collecting data...</div></div>
+    </div>
+
+    <div class="card">
+        <div class="ct">Sentiment</div>
+        <div class="g3">
+            <div class="echip"><div class="cl">Fear/Greed</div><div class="cv" id="fearGreed">--</div></div>
+            <div class="echip"><div class="cl">Sentiment</div><div class="cv" id="sentiment">--</div></div>
+            <div class="echip"><div class="cl">Funding</div><div class="cv" id="funding">--</div></div>
+        </div>
+    </div>
+
+    <div class="upgrade">
+        <h3>⚡ Want 5-Minute Predictions?</h3>
+        <p>Get faster predictions with orderbook analysis, candle patterns, whale tracking, and ML strategy learning.</p>
+        <button class="btn btn-btc" onclick="window.location.href='/'">Get Pro Access</button>
+    </div>
+</div>
+
+<script>
+// ═══ FREE TIER: 1-HOUR BTC PREDICTION ═══
+let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
+
+// Fetch BTC price via Polymarket Chainlink WebSocket
+let polyWs=null;
+function connectWs(){
+    try{
+        polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
+        polyWs.onopen=function(){
+            polyWs.send(JSON.stringify({action:'subscribe',subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]}));
+        };
+        polyWs.onmessage=function(e){
+            try{
+                const d=JSON.parse(e.data);
+                if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
+                    btcPrice=d.payload.value;
+                    updateUI();
+                }
+            }catch(e){}
+        };
+        polyWs.onclose=function(){setTimeout(connectWs,3000)};
+        polyWs.onerror=function(){polyWs.close()};
+    }catch(e){setTimeout(connectWs,5000)}
+}
+
+// Backup: Binance
+let binWs=null;
+function connectBinance(){
+    try{
+        binWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+        binWs.onmessage=function(e){const d=JSON.parse(e.data);if(!btcPrice)btcPrice=parseFloat(d.p)};
+        binWs.onclose=function(){setTimeout(connectBinance,3000)};
+        binWs.onerror=function(){binWs.close()};
+    }catch(e){setTimeout(connectBinance,5000)}
+}
+
+connectWs();
+connectBinance();
+
+// PTB: set at each hour boundary
+function getHourEnd(){
+    const now=new Date();
+    const next=new Date(now);
+    next.setMinutes(0,0,0);
+    next.setHours(next.getHours()+1);
+    return next;
+}
+
+function getHourStart(){
+    const now=new Date();
+    const start=new Date(now);
+    start.setMinutes(0,0,0);
+    return start;
+}
+
+// Set PTB at hour boundary
+function checkPtb(){
+    const now=new Date();
+    const hourStart=getHourStart();
+    // If within first 2 seconds of hour, or no PTB set for this hour
+    if(!ptbSetAt||ptbSetAt.getHours()!==now.getHours()){
+        if(btcPrice&&now.getMinutes()<2){
+            ptb=btcPrice;
+            ptbSetAt=now;
+            locked=false;
+            prediction=null;
+            console.log('🎯 PTB set: $'+ptb.toFixed(2));
+        }
+    }
+}
+
+// RSI calculation
+function calcRsi(prices,period){
+    if(prices.length<period+1)return null;
+    let gains=0,losses=0;
+    for(let i=prices.length-period;i<prices.length;i++){
+        const diff=prices[i]-prices[i-1];
+        if(diff>0)gains+=diff;else losses-=diff;
+    }
+    const rs=gains/Math.max(losses,0.001);
+    return 100-(100/(1+rs));
+}
+
+// Price history for indicators
+let priceHistory=[];
+let sentimentData={fearGreed:null,sentiment:null,funding:null};
+
+// Fetch sentiment
+async function fetchSentiment(){
+    try{
+        const r=await fetch('https://api.alternative.me/fng/');
+        const d=await r.json();
+        if(d.data&&d.data[0]){
+            sentimentData.fearGreed=d.data[0].value+' ('+d.data[0].value_classification+')';
+            document.getElementById('fearGreed').textContent=sentimentData.fearGreed;
+        }
+    }catch(e){}
+    try{
+        const r=await fetch('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1');
+        const d=await r.json();
+        if(d[0]){
+            const rate=(parseFloat(d[0].fundingRate)*100).toFixed(4)+'%';
+            sentimentData.funding=rate;
+            document.getElementById('funding').textContent=rate;
+        }
+    }catch(e){}
+    try{
+        const r=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT');
+        const d=await r.json();
+        const change=parseFloat(d.priceChangePercent);
+        sentimentData.sentiment=change>1?'Bullish':change<-1?'Bearish':'Neutral';
+        document.getElementById('sentiment').textContent=sentimentData.sentiment;
+        document.getElementById('sentiment').style.color=change>1?'var(--up)':change<-1?'var(--dn)':'var(--tx2)';
+    }catch(e){}
+}
+
+// Make prediction at ~5 minutes into the hour
+function makePrediction(){
+    if(!btcPrice||!ptb||locked)return;
+    const now=new Date();
+    if(now.getMinutes()<3)return; // Wait for enough data
+    if(now.getMinutes()>10&&!locked)return; // Don't predict too late unless we haven't yet
+
+    const priceDiff=btcPrice-ptb;
+    const abovePtb=priceDiff>0;
+    const gap=Math.abs(priceDiff);
+
+    // RSI
+    const rsi=calcRsi(priceHistory.map(p=>p.price),14);
+    const rsiOB=rsi&&rsi>70;
+    const rsiOS=rsi&&rsi<30;
+
+    // Trend: count up vs down ticks
+    let upTicks=0,downTicks=0;
+    for(let i=1;i<priceHistory.length;i++){
+        if(priceHistory[i].price>priceHistory[i-1].price)upTicks++;
+        else if(priceHistory[i].price<priceHistory[i-1].price)downTicks++;
+    }
+    const trendUp=upTicks>downTicks;
+
+    // Fear & greed contrarian
+    let fgSignal=null;
+    if(sentimentData.fearGreed){
+        const fgVal=parseInt(sentimentData.fearGreed);
+        if(fgVal<25)fgSignal=true; // Extreme fear → contrarian buy
+        if(fgVal>75)fgSignal=false; // Extreme greed → contrarian sell
+    }
+
+    // Decision logic
+    let pred,strategy;
+    const signals=[];
+
+    // Spike reversion: big gap + RSI extreme
+    if(gap>80&&((abovePtb&&rsiOB)||(!abovePtb&&rsiOS))){
+        pred=!abovePtb;
+        strategy='REVERSION (spike $'+gap.toFixed(0)+', RSI '+(rsi?rsi.toFixed(0):'?')+')';
+    }
+    // Strong gap with trend confirmation
+    else if(gap>40&&trendUp===abovePtb){
+        pred=abovePtb;
+        strategy='MOMENTUM ($'+gap.toFixed(0)+' gap, trend confirms)';
+    }
+    // Fear/greed extreme
+    else if(fgSignal!==null&&gap<30){
+        pred=fgSignal;
+        strategy='CONTRARIAN (F&G '+(fgSignal?'fear→buy':'greed→sell')+')';
+    }
+    // Trend
+    else if(Math.abs(upTicks-downTicks)>3){
+        pred=trendUp;
+        strategy='TREND ('+upTicks+'↑ '+downTicks+'↓)';
+    }
+    // Default: follow current position
+    else{
+        pred=abovePtb;
+        strategy='DEFAULT (price '+(abovePtb?'above':'below')+')';
+    }
+
+    // Confidence
+    let conf=85;
+    if(strategy.includes('REVERSION'))conf+=8;
+    else if(strategy.includes('MOMENTUM'))conf+=gap>60?6:3;
+    else if(strategy.includes('CONTRARIAN'))conf+=4;
+    conf=Math.min(conf,96);
+
+    prediction={willBeat:pred,confidence:conf,strategy:strategy};
+    locked=true;
+
+    // Build signals display
+    signals.push({name:'Gap: $'+gap.toFixed(0)+(abovePtb?' above':' below'),up:abovePtb});
+    if(rsi)signals.push({name:'RSI: '+rsi.toFixed(0)+(rsiOB?' 🔴OB':rsiOS?' 🟢OS':''),up:rsi>50});
+    signals.push({name:'Trend: '+upTicks+'↑ '+downTicks+'↓',up:trendUp});
+    if(sentimentData.fearGreed)signals.push({name:'F&G: '+sentimentData.fearGreed,up:parseInt(sentimentData.fearGreed)<40});
+    signals.push({name:'→ '+strategy,up:pred});
+
+    document.getElementById('signals').innerHTML=signals.map(s=>
+        '<div class="sig '+(s.up?'sig-u':'sig-d')+'"><span>'+s.name+'</span><span style="color:'+(s.up?'var(--up)':'var(--dn)')+'">'+
+        (s.up?'▲':'▼')+'</span></div>').join('');
+
+    updatePredDisplay();
+    console.log('🔒 LOCKED: '+(pred?'YES ↑':'NO ↓')+' | '+strategy+' | Conf: '+conf+'%');
+}
+
+function updatePredDisplay(){
+    if(!prediction)return;
+    const el=document.getElementById('predDisplay');
+    el.className='pred '+(prediction.willBeat?'pred-up':'pred-dn');
+    document.getElementById('predValue').innerHTML=
+        '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES':'↓ NO')+'</div>'+
+        '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?ptb.toFixed(2):'--')+'</div>';
+    document.getElementById('predConf').textContent='Confidence: '+prediction.confidence+'%';
+    document.getElementById('confPct').textContent=prediction.confidence+'%';
+    document.getElementById('confBar').style.width=prediction.confidence+'%';
+    document.getElementById('confBar').style.background=prediction.confidence>=80?
+        'linear-gradient(90deg,var(--up),#00b86e)':'linear-gradient(90deg,#eab308,#d97706)';
+}
+
+function updateUI(){
+    if(!btcPrice)return;
+    document.getElementById('currentPrice').textContent='$'+btcPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
+
+    // Store price history
+    priceHistory.push({price:btcPrice,time:Date.now()});
+    if(priceHistory.length>200)priceHistory.shift();
+
+    if(ptb){
+        document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        document.getElementById('ptbTime').textContent='Set at '+ptbSetAt.toLocaleTimeString();
+        const d=btcPrice-ptb,p=(d/ptb*100).toFixed(3);
+        document.getElementById('vsComparison').innerHTML=d>0?
+            '<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':
+            '<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>';
+    }
+
+    // Countdown
+    const end=getHourEnd();
+    const tl=end-new Date();
+    const mins=Math.floor(tl/60000);
+    const secs=Math.floor((tl%60000)/1000);
+    document.getElementById('countdown').textContent=mins+'m '+secs+'s';
+
+    // Status
+    if(locked&&prediction){
+        document.getElementById('status').textContent='🔒 Prediction locked: '+(prediction.willBeat?'YES ↑':'NO ↓')+' | '+prediction.strategy;
+    }else if(ptb){
+        document.getElementById('status').textContent='Analyzing... prediction locks at ~5 minutes';
+    }else{
+        document.getElementById('status').textContent='Waiting for hour boundary to set PTB...';
+    }
+
+    checkPtb();
+    if(!locked)makePrediction();
+}
+
+// Check for new hour → reset
+setInterval(()=>{
+    const now=new Date();
+    if(now.getMinutes()===0&&now.getSeconds()<3){
+        locked=false;
+        prediction=null;
+        ptb=null;
+        document.getElementById('predDisplay').className='pred pred-nu';
+        document.getElementById('predValue').textContent='--';
+        document.getElementById('predConf').textContent='New hour starting...';
+        document.getElementById('signals').innerHTML='<span style="color:var(--tx3)">Collecting data...</span>';
+    }
+},1000);
+
+// Fetch sentiment on load and every 5 min
+fetchSentiment();
+setInterval(fetchSentiment,300000);
+
+// Update countdown every second
+setInterval(()=>{
+    const end=getHourEnd();
+    const tl=end-new Date();
+    const mins=Math.floor(tl/60000);
+    const secs=Math.floor((tl%60000)/1000);
+    document.getElementById('countdown').textContent=mins+'m '+secs+'s';
+},1000);
+</script>
+</body>
+</html>
