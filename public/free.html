@@ -147,7 +147,85 @@ function connectBinance(){
 connectWs();
 connectBinance();
 
-// PTB: set at each hour boundary
+// ═══ PTB: EXACT SAME APPROACH AS 5-MIN VERSION ═══
+// Timer fires at exact hour boundary, captures Chainlink price
+let latestChainlinkPrice=null;
+let ptbHour=-1;
+
+// Patch WebSocket to also track Chainlink price
+function patchChainlinkTracking(){
+    if(!polyWs)return;
+    const origHandler=polyWs.onmessage;
+    polyWs.onmessage=function(e){
+        try{
+            const d=JSON.parse(e.data);
+            if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
+                latestChainlinkPrice=d.payload.value;
+                btcPrice=d.payload.value;
+                updateUI();
+            }
+        }catch(ex){}
+    };
+}
+setTimeout(patchChainlinkTracking,1000);
+
+// Save/load PTB to localStorage (survives page refresh within same hour)
+function savePtb(price){
+    const hour=new Date().getHours();
+    localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now()}));
+}
+
+function loadPtb(){
+    try{
+        const d=JSON.parse(localStorage.getItem('ptb_hourly'));
+        const currentHour=new Date().getHours();
+        if(d&&d.hour===currentHour&&d.price>30000&&d.price<200000&&(Date.now()-d.ts)<3600000){
+            ptb=d.price;
+            ptbSetAt=new Date();
+            ptbSetAt.setMinutes(0,0,0);
+            ptbHour=currentHour;
+            console.log('📌 PTB restored from cache: $'+d.price.toFixed(2));
+        }
+    }catch(e){}
+}
+loadPtb();
+
+// Timer at exact hour boundary — same as 5-min version's startPtbTimer
+function startPtbTimer(){
+    const now=Date.now();
+    const hourMs=3600000;
+    const nextBoundary=Math.ceil(now/hourMs)*hourMs;
+    const delay=nextBoundary-now;
+    
+    console.log('⏱️ Next PTB capture in '+(delay/1000/60).toFixed(1)+' minutes');
+    
+    setTimeout(()=>{
+        const ptbPrice=latestChainlinkPrice||btcPrice;
+        if(ptbPrice){
+            ptb=ptbPrice;
+            ptbSetAt=new Date();
+            ptbHour=new Date().getHours();
+            locked=false;
+            prediction=null;
+            savePtb(ptbPrice);
+            console.log('🎯 HOURLY PTB SET: $'+ptbPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
+        }
+        setInterval(()=>{
+            const p=latestChainlinkPrice||btcPrice;
+            if(p){
+                ptb=p;
+                ptbSetAt=new Date();
+                ptbHour=new Date().getHours();
+                locked=false;
+                prediction=null;
+                savePtb(p);
+                console.log('🎯 HOURLY PTB SET: $'+p.toFixed(2)+' at '+new Date().toLocaleTimeString());
+            }
+        },hourMs);
+    },delay);
+}
+startPtbTimer();
+
 function getHourEnd(){
     const now=new Date();
     const next=new Date(now);
@@ -163,41 +241,20 @@ function getHourStart(){
     return start;
 }
 
-// Track which hour we've set PTB for
-let ptbHour=-1;
-let ptbSource='';
-
-// Called every time we get a Chainlink price update
+// For mid-hour joins only — fetch Binance hourly open as fallback
 function checkPtb(){
     const now=new Date();
     const currentHour=now.getHours();
-    
-    // Already set for this hour? Skip.
     if(ptbHour===currentHour)return;
-    
-    if(btcPrice){
-        if(now.getMinutes()===0||(now.getMinutes()<=1&&ptbHour!==currentHour)){
-            // We're at the hour boundary — this Chainlink price IS the PTB
-            ptb=btcPrice;
-            ptbSetAt=now;
-            ptbHour=currentHour;
-            ptbSource='Chainlink (live)';
-            locked=false;
-            prediction=null;
-            console.log('🎯 PTB set from Chainlink at boundary: $'+ptb.toFixed(2));
-        }else if(ptbHour!==currentHour){
-            // Mid-hour join — fetch the actual hour open from Binance
-            ptbHour=currentHour; // Prevent multiple fetches
-            fetchHourlyOpen();
-        }
+    if(btcPrice&&now.getMinutes()>=1){
+        ptbHour=currentHour;
+        fetchBinanceHourlyOpen();
     }
 }
 
-// Get the hourly candle open price from Binance (very close to Chainlink)
-async function fetchHourlyOpen(){
+async function fetchBinanceHourlyOpen(){
     try{
-        const hourStart=getHourStart();
-        const startMs=hourStart.getTime();
+        const startMs=getHourStart().getTime();
         const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&startTime='+startMs+'&limit=1');
         const d=await r.json();
         if(d&&d[0]){
@@ -205,23 +262,19 @@ async function fetchHourlyOpen(){
             if(openPrice>30000&&openPrice<200000){
                 ptb=openPrice;
                 ptbSetAt=getHourStart();
-                ptbSource='Binance hourly open';
                 locked=false;
                 prediction=null;
-                console.log('🎯 PTB from Binance hourly open: $'+ptb.toFixed(2));
+                savePtb(openPrice);
+                console.log('🎯 PTB from Binance hourly open (mid-join): $'+openPrice.toFixed(2));
                 return;
             }
         }
-    }catch(e){console.log('Binance fetch failed, using current price')}
-    
-    // Last resort
-    if(btcPrice){
+    }catch(e){}
+    if(btcPrice&&!ptb){
         ptb=btcPrice;
         ptbSetAt=new Date();
-        ptbSource='current price (approx)';
         locked=false;
         prediction=null;
-        console.log('⚠️ PTB fallback: $'+ptb.toFixed(2));
     }
 }
 
@@ -408,7 +461,7 @@ function updateUI(){
 
     if(ptb){
         document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        document.getElementById('ptbTime').textContent=(ptbSource||'Set at hour mark');
+        document.getElementById('ptbTime').textContent=ptbSetAt?'Set at '+ptbSetAt.toLocaleTimeString():'Set at hour mark';
         const d=btcPrice-ptb,p=(d/ptb*100).toFixed(3);
         document.getElementById('vsComparison').innerHTML=d>0?
             '<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':
