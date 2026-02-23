@@ -166,15 +166,27 @@ function getHourStart(){
 // Set PTB at hour boundary
 function checkPtb(){
     const now=new Date();
-    const hourStart=getHourStart();
-    // If within first 2 seconds of hour, or no PTB set for this hour
+    // If no PTB set for this hour, set it NOW with current price
+    // This handles: page load mid-hour, new hour boundary, first load
     if(!ptbSetAt||ptbSetAt.getHours()!==now.getHours()){
-        if(btcPrice&&now.getMinutes()<2){
-            ptb=btcPrice;
-            ptbSetAt=now;
-            locked=false;
-            prediction=null;
-            console.log('🎯 PTB set: $'+ptb.toFixed(2));
+        if(btcPrice){
+            if(now.getMinutes()<5){
+                // Fresh hour — use current price as PTB (ideal)
+                ptb=btcPrice;
+                ptbSetAt=now;
+                locked=false;
+                prediction=null;
+                console.log('🎯 PTB set (new hour): $'+ptb.toFixed(2));
+            }else if(!ptb){
+                // Mid-hour join — still set PTB so user sees SOMETHING
+                // Use current price, prediction will be less accurate but at least it works
+                ptb=btcPrice;
+                ptbSetAt=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours(),0,0);
+                locked=false;
+                prediction=null;
+                console.log('🎯 PTB set (mid-hour join): $'+ptb.toFixed(2)+' — next hour will be more accurate');
+                document.getElementById('ptbTime').textContent='Set at join (approx)';
+            }
         }
     }
 }
@@ -224,12 +236,12 @@ async function fetchSentiment(){
     }catch(e){}
 }
 
-// Make prediction at ~3 minutes into the hour
+// Make prediction once we have enough price data
 function makePrediction(){
     if(!btcPrice||!ptb||locked)return;
     const now=new Date();
-    if(now.getMinutes()<3)return;
-    if(now.getMinutes()>10&&!locked)return;
+    // Need at least 30 seconds of price data (6+ ticks at 5s interval)
+    if(priceHistory.length<6)return;
 
     const diff=btcPrice-ptb;
     const abovePtb=diff>0;
@@ -379,10 +391,12 @@ function updateUI(){
     // Status
     if(locked&&prediction){
         document.getElementById('status').textContent='🔒 Prediction locked: '+(prediction.willBeat?'YES ↑':'NO ↓')+' | '+prediction.strategy;
+    }else if(ptb&&priceHistory.length<6){
+        document.getElementById('status').textContent='Collecting price data... ('+priceHistory.length+'/6 ticks)';
     }else if(ptb){
-        document.getElementById('status').textContent='Analyzing... prediction locks at ~5 minutes';
+        document.getElementById('status').textContent='Analyzing... prediction coming soon';
     }else{
-        document.getElementById('status').textContent='Waiting for hour boundary to set PTB...';
+        document.getElementById('status').textContent='Connecting to price feed...';
     }
 
     checkPtb();
