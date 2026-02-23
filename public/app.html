@@ -1135,35 +1135,38 @@ const diff=cur-ptb;
 const slotEnd=getSlotEnd(selectedTimeframe);
 const timeLeft=Math.max(0,(slotEnd-new Date())/1000);
 const timePct=timeLeft/(selectedTimeframe*60); // 1=just started, 0=ending
-// More weight as time runs out — $100 below with 30s left is basically certain NO
-const priceWeight=3+Math.pow(1-timePct,2)*7;
+// Weight: base 10, scales up to 30 as time runs out
+// Also scales with gap size — $100 gap counts way more than $5 gap
+const timeScale=10+Math.pow(1-timePct,2)*20;
+const gapScale=Math.min(Math.abs(diff)/20,3); // $20=1x, $60=3x cap
+const priceWeight=timeScale*Math.max(gapScale,0.5);
 score+=diff>0?priceWeight:-priceWeight;
 sigs.push({name:'Price vs PTB',signal:(diff>0?'+$':'-$')+Math.abs(diff).toFixed(0)+' · '+Math.floor(timeLeft/60)+'m '+Math.floor(timeLeft%60)+'s left',strength:priceWeight});
 
 // 2. RSI — above 50 = bullish momentum
 const rs=rsi(jp);
-if(rs){score+=(rs-50)/50;sigs.push({name:'RSI '+rs.toFixed(0),signal:rs>50?'BULLISH':'BEARISH',strength:1})}
+if(rs){score+=(rs-50)/100;sigs.push({name:'RSI '+rs.toFixed(0),signal:rs>50?'BULLISH':'BEARISH',strength:0.5})}
 
 // 3. MACD — positive = bullish
 const mc=macd(jp);
-if(mc){score+=mc.macd>0?1:-1;sigs.push({name:'MACD',signal:mc.signal,strength:1})}
+if(mc){score+=mc.macd>0?0.5:-0.5;sigs.push({name:'MACD',signal:mc.signal,strength:0.5})}
 
 // 4. EMA 9 vs 21 — fast above slow = bullish
 if(jp.length>=21){
   const e9=ema(jp,9),e21=ema(jp,21);
-  if(e9&&e21){score+=e9>e21?1.5:-1.5;sigs.push({name:'EMA 9/21',signal:e9>e21?'BULLISH':'BEARISH',strength:1.5})}
+  if(e9&&e21){score+=e9>e21?0.5:-0.5;sigs.push({name:'EMA 9/21',signal:e9>e21?'BULLISH':'BEARISH',strength:0.5})}
 }
 
 // 5. ORDER BOOK — more bids = buyers want it higher
 if(orderBookData.bidTotal>0){
   const imb=orderBookData.nearImbalance||orderBookData.imbalance;
-  score+=imb*4;
-  sigs.push({name:'Orderbook',signal:(imb>0?'BID':'ASK')+' heavy '+(imb*100).toFixed(0)+'%',strength:Math.abs(imb)*2});
+  score+=imb*2;
+  sigs.push({name:'Orderbook',signal:(imb>0?'BID':'ASK')+' heavy '+(imb*100).toFixed(0)+'%',strength:Math.abs(imb)});
 }
 
 // 6. TRADE FLOW — who's actually buying
 if(tradeFlowData.buyVolume>0){
-  const bias=(tradeFlowData.buyRatio-0.5)*3;
+  const bias=(tradeFlowData.buyRatio-0.5)*2;
   score+=bias;
   sigs.push({name:'Trade Flow',signal:(tradeFlowData.buyRatio*100).toFixed(0)+'% buyers',strength:Math.abs(bias)});
 }
@@ -1171,16 +1174,16 @@ if(tradeFlowData.buyVolume>0){
 // 7. POLYMARKET ODDS — real money says what
 const polyUp=(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000)?polymarketOdds.upPrice:null;
 if(polyUp&&Math.abs(polyUp-0.5)>0.03){
-  score+=(polyUp-0.5)*6;
-  sigs.push({name:'Polymarket',signal:Math.round(polyUp*100)+'¢ UP',strength:Math.abs(polyUp-0.5)*3});
+  score+=(polyUp-0.5)*4;
+  sigs.push({name:'Polymarket',signal:Math.round(polyUp*100)+'¢ UP',strength:Math.abs(polyUp-0.5)*2});
 }
 
 // 8. PRICE DIRECTION — is it moving up or down right now
 if(jp.length>=5){
   const recent=jp.slice(-5);
   const dir=(recent[4]-recent[0]);
-  score+=dir>0?1:-1;
-  sigs.push({name:'Direction',signal:dir>0?'MOVING UP':'MOVING DOWN',strength:1});
+  score+=dir>0?0.5:-0.5;
+  sigs.push({name:'Direction',signal:dir>0?'MOVING UP':'MOVING DOWN',strength:0.5});
 }
 
 // ═══ DONE. Score decides. No strategy overrides. ═══
