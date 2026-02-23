@@ -224,91 +224,80 @@ async function fetchSentiment(){
     }catch(e){}
 }
 
-// Make prediction at ~5 minutes into the hour
+// Make prediction at ~3 minutes into the hour
 function makePrediction(){
     if(!btcPrice||!ptb||locked)return;
     const now=new Date();
-    if(now.getMinutes()<3)return; // Wait for enough data
-    if(now.getMinutes()>10&&!locked)return; // Don't predict too late unless we haven't yet
+    if(now.getMinutes()<3)return;
+    if(now.getMinutes()>10&&!locked)return;
 
-    const priceDiff=btcPrice-ptb;
-    const abovePtb=priceDiff>0;
-    const gap=Math.abs(priceDiff);
+    const diff=btcPrice-ptb;
+    const abovePtb=diff>0;
+    const gap=Math.abs(diff);
 
-    // RSI
+    // ═══ SIMPLE SCORING — same approach as 5-min version ═══
+    let score=0;
+    const signals=[];
+
+    // 1. PRICE vs PTB — heaviest signal
+    const minutesLeft=60-now.getMinutes();
+    const timeScale=5+Math.pow(1-minutesLeft/60,2)*10;
+    const gapScale=Math.min(gap/50,3);
+    const priceWeight=timeScale*Math.max(gapScale,0.5);
+    score+=abovePtb?priceWeight:-priceWeight;
+    signals.push({name:'Price vs PTB: '+(abovePtb?'+':'-')+'$'+gap.toFixed(0)+' ('+minutesLeft+'m left)',up:abovePtb});
+
+    // 2. RSI
     const rsi=calcRsi(priceHistory.map(p=>p.price),14);
-    const rsiOB=rsi&&rsi>70;
-    const rsiOS=rsi&&rsi<30;
+    if(rsi){
+        score+=rsi>50?0.5:-0.5;
+        signals.push({name:'RSI: '+rsi.toFixed(0),up:rsi>50});
+    }
 
-    // Trend: count up vs down ticks
+    // 3. Trend — up vs down ticks
     let upTicks=0,downTicks=0;
     for(let i=1;i<priceHistory.length;i++){
         if(priceHistory[i].price>priceHistory[i-1].price)upTicks++;
         else if(priceHistory[i].price<priceHistory[i-1].price)downTicks++;
     }
-    const trendUp=upTicks>downTicks;
-
-    // Fear & greed contrarian
-    let fgSignal=null;
-    if(sentimentData.fearGreed){
-        const fgVal=parseInt(sentimentData.fearGreed);
-        if(fgVal<25)fgSignal=true; // Extreme fear → contrarian buy
-        if(fgVal>75)fgSignal=false; // Extreme greed → contrarian sell
+    if(upTicks+downTicks>5){
+        score+=upTicks>downTicks?0.5:-0.5;
+        signals.push({name:'Trend: '+upTicks+'↑ '+downTicks+'↓',up:upTicks>downTicks});
     }
 
-    // Decision logic
-    let pred,strategy;
-    const signals=[];
+    // 4. Direction — last few ticks
+    if(priceHistory.length>=5){
+        const recent=priceHistory.slice(-5);
+        const dir=recent[4].price-recent[0].price;
+        score+=dir>0?0.5:-0.5;
+        signals.push({name:'Direction: '+(dir>0?'UP':'DOWN'),up:dir>0});
+    }
 
-    // Spike reversion: big gap + RSI extreme
-    if(gap>80&&((abovePtb&&rsiOB)||(!abovePtb&&rsiOS))){
-        pred=!abovePtb;
-        strategy='REVERSION (spike $'+gap.toFixed(0)+', RSI '+(rsi?rsi.toFixed(0):'?')+')';
+    // 5. Sentiment
+    if(sentimentData.sentiment){
+        const bullish=sentimentData.sentiment==='Bullish';
+        score+=bullish?0.3:-0.3;
+        signals.push({name:'Sentiment: '+sentimentData.sentiment,up:bullish});
     }
-    // Strong gap with trend confirmation
-    else if(gap>40&&trendUp===abovePtb){
-        pred=abovePtb;
-        strategy='MOMENTUM ($'+gap.toFixed(0)+' gap, trend confirms)';
-    }
-    // Fear/greed extreme
-    else if(fgSignal!==null&&gap<30){
-        pred=fgSignal;
-        strategy='CONTRARIAN (F&G '+(fgSignal?'fear→buy':'greed→sell')+')';
-    }
-    // Trend
-    else if(Math.abs(upTicks-downTicks)>3){
-        pred=trendUp;
-        strategy='TREND ('+upTicks+'↑ '+downTicks+'↓)';
-    }
-    // Default: follow current position
-    else{
-        pred=abovePtb;
-        strategy='DEFAULT (price '+(abovePtb?'above':'below')+')';
-    }
+
+    // Score decides — no overrides
+    const pred=score>0;
+    const strategy='SCORE '+(score>0?'+':'')+score.toFixed(1);
 
     // Confidence
-    let conf=85;
-    if(strategy.includes('REVERSION'))conf+=8;
-    else if(strategy.includes('MOMENTUM'))conf+=gap>60?6:3;
-    else if(strategy.includes('CONTRARIAN'))conf+=4;
-    conf=Math.min(conf,96);
+    const conf=Math.max(85,Math.min(98,85+Math.abs(score)/priceWeight*10));
 
-    prediction={willBeat:pred,confidence:conf,strategy:strategy};
+    prediction={willBeat:pred,confidence:Math.round(conf),strategy:strategy};
     locked=true;
 
-    // Build signals display
-    signals.push({name:'Gap: $'+gap.toFixed(0)+(abovePtb?' above':' below'),up:abovePtb});
-    if(rsi)signals.push({name:'RSI: '+rsi.toFixed(0)+(rsiOB?' 🔴OB':rsiOS?' 🟢OS':''),up:rsi>50});
-    signals.push({name:'Trend: '+upTicks+'↑ '+downTicks+'↓',up:trendUp});
-    if(sentimentData.fearGreed)signals.push({name:'F&G: '+sentimentData.fearGreed,up:parseInt(sentimentData.fearGreed)<40});
-    signals.push({name:'→ '+strategy,up:pred});
+    signals.push({name:'→ '+(pred?'YES ↑':'NO ↓')+' ('+strategy+')',up:pred});
 
     document.getElementById('signals').innerHTML=signals.map(s=>
         '<div class="sig '+(s.up?'sig-u':'sig-d')+'"><span>'+s.name+'</span><span style="color:'+(s.up?'var(--up)':'var(--dn)')+'">'+
         (s.up?'▲':'▼')+'</span></div>').join('');
 
     updatePredDisplay();
-    console.log('🔒 LOCKED: '+(pred?'YES ↑':'NO ↓')+' | '+strategy+' | Conf: '+conf+'%');
+    console.log('🔒 LOCKED: '+(pred?'YES ↑':'NO ↓')+' | '+strategy+' | Conf: '+conf.toFixed(0)+'%');
 }
 
 function updatePredDisplay(){
