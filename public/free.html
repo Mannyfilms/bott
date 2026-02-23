@@ -235,9 +235,20 @@ function makePrediction(){
     const abovePtb=diff>0;
     const gap=Math.abs(diff);
 
-    // ═══ SIMPLE SCORING — same approach as 5-min version ═══
+    // ═══ SIMPLE SCORING ═══
     let score=0;
     const signals=[];
+
+    // ═══ SESSION DETECTION ═══
+    const hourET=new Date().toLocaleString('en-US',{timeZone:'America/New_York',hour:'numeric',hour12:false});
+    const h=parseInt(hourET);
+    const isUSSession=h>=9&&h<16;
+    const isAsiaSession=h>=20||h<4;
+    const isEuroSession=h>=3&&h<9;
+    const sessionName=isUSSession?'US 🇺🇸':isAsiaSession?'ASIA 🌏':isEuroSession?'EURO 🇪🇺':'OFF';
+    const momentumBoost=isUSSession?1.5:isEuroSession?1.2:0.8;
+    const reversionBoost=isAsiaSession?1.5:isUSSession?0.7:1.0;
+    signals.push({name:'Session: '+sessionName,up:isUSSession});
 
     // 1. PRICE vs PTB — heaviest signal
     const minutesLeft=60-now.getMinutes();
@@ -247,21 +258,29 @@ function makePrediction(){
     score+=abovePtb?priceWeight:-priceWeight;
     signals.push({name:'Price vs PTB: '+(abovePtb?'+':'-')+'$'+gap.toFixed(0)+' ('+minutesLeft+'m left)',up:abovePtb});
 
-    // 2. RSI
+    // 2. RSI — momentum in US, reversion in Asia
     const rsi=calcRsi(priceHistory.map(p=>p.price),14);
     if(rsi){
-        score+=rsi>50?0.5:-0.5;
-        signals.push({name:'RSI: '+rsi.toFixed(0),up:rsi>50});
+        if(isAsiaSession&&(rsi>75||rsi<25)){
+            const revScore=rsi>75?-1.5*reversionBoost:1.5*reversionBoost;
+            score+=revScore;
+            signals.push({name:'RSI: '+rsi.toFixed(0)+(rsi>75?' OVERBOUGHT→FADE':' OVERSOLD→BOUNCE'),up:rsi<25});
+        }else{
+            const w=0.5*momentumBoost;
+            score+=rsi>50?w:-w;
+            signals.push({name:'RSI: '+rsi.toFixed(0),up:rsi>50});
+        }
     }
 
-    // 3. Trend — up vs down ticks
+    // 3. Trend — boosted in US session
     let upTicks=0,downTicks=0;
     for(let i=1;i<priceHistory.length;i++){
         if(priceHistory[i].price>priceHistory[i-1].price)upTicks++;
         else if(priceHistory[i].price<priceHistory[i-1].price)downTicks++;
     }
     if(upTicks+downTicks>5){
-        score+=upTicks>downTicks?0.5:-0.5;
+        const w=0.5*momentumBoost;
+        score+=upTicks>downTicks?w:-w;
         signals.push({name:'Trend: '+upTicks+'↑ '+downTicks+'↓',up:upTicks>downTicks});
     }
 
@@ -273,11 +292,29 @@ function makePrediction(){
         signals.push({name:'Direction: '+(dir>0?'UP':'DOWN'),up:dir>0});
     }
 
-    // 5. Sentiment
+    // 5. Sentiment — boosted in US (institutional driven)
     if(sentimentData.sentiment){
         const bullish=sentimentData.sentiment==='Bullish';
-        score+=bullish?0.3:-0.3;
+        const w=isUSSession?0.5:0.3;
+        score+=bullish?w:-w;
         signals.push({name:'Sentiment: '+sentimentData.sentiment,up:bullish});
+    }
+
+    // 6. Funding rate — positive = longs paying shorts = bullish momentum
+    if(sentimentData.funding){
+        const rate=parseFloat(sentimentData.funding);
+        if(Math.abs(rate)>0.01){
+            if(isAsiaSession){
+                // Asia: contrarian on extreme funding
+                const w=Math.abs(rate)>0.05?0.8*reversionBoost:0.3;
+                score+=rate>0.05?-w:rate<-0.02?w:0;
+                if(Math.abs(rate)>0.05)signals.push({name:'Funding: '+sentimentData.funding+(rate>0?' → FADE':'→ BOUNCE'),up:rate<0});
+            }else{
+                const w=0.3*momentumBoost;
+                score+=rate>0?w:-w;
+                signals.push({name:'Funding: '+sentimentData.funding,up:rate>0});
+            }
+        }
     }
 
     // Score decides — no overrides
@@ -297,7 +334,7 @@ function makePrediction(){
         (s.up?'▲':'▼')+'</span></div>').join('');
 
     updatePredDisplay();
-    console.log('🔒 LOCKED: '+(pred?'YES ↑':'NO ↓')+' | '+strategy+' | Conf: '+conf.toFixed(0)+'%');
+    console.log('🔒 LOCKED: '+(pred?'YES ↑':'NO ↓')+' | '+sessionName+' | '+strategy+' | Conf: '+conf.toFixed(0)+'%');
 }
 
 function updatePredDisplay(){
