@@ -147,57 +147,6 @@ function connectBinance(){
 connectWs();
 connectBinance();
 
-// ═══ FETCH REAL PTB FROM POLYMARKET ═══
-// The hourly BTC market has the actual Price to Beat from Chainlink
-let realPtbFetched=false;
-async function fetchRealPtb(){
-    try{
-        // Polymarket hourly BTC markets use slug pattern with timestamps
-        const now=new Date();
-        const hourStart=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours(),0,0);
-        const ts=Math.floor(hourStart.getTime()/1000);
-        
-        // Try fetching the current hourly market from gamma API
-        const r=await fetch('https://gamma-api.polymarket.com/events?active=true&closed=false&limit=20&tag=crypto');
-        const events=await r.json();
-        
-        // Look for the hourly BTC up/down market
-        for(const ev of events){
-            const title=(ev.title||'').toLowerCase();
-            if(title.includes('bitcoin')&&title.includes('up or down')&&title.includes('hour')){
-                // Found it — get the description which contains PTB
-                if(ev.markets&&ev.markets[0]){
-                    const desc=ev.markets[0].description||ev.description||'';
-                    // PTB is usually in the market page data
-                    // Try to get it from the market's customData or description
-                    const ptbMatch=desc.match(/\$([0-9,]+\.?\d*)/);
-                    if(ptbMatch){
-                        const fetchedPtb=parseFloat(ptbMatch[1].replace(/,/g,''));
-                        if(fetchedPtb>50000&&fetchedPtb<200000){
-                            ptb=fetchedPtb;
-                            ptbSetAt=hourStart;
-                            realPtbFetched=true;
-                            locked=false;
-                            prediction=null;
-                            console.log('🎯 REAL PTB from Polymarket: $'+ptb.toFixed(2));
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }catch(e){console.log('PTB fetch failed:',e)}
-    
-    // Fallback: try Chainlink data feed for hour-start price
-    try{
-        const r=await fetch('https://data.chain.link/api/query/feed/ethereum-mainnet/btc-usd/latest');
-        const d=await r.json();
-        // This gives current price, not hour-start, but closer than mid-hour join
-    }catch(e){}
-    
-    return false;
-}
-
 // PTB: set at each hour boundary
 function getHourEnd(){
     const now=new Date();
@@ -214,62 +163,65 @@ function getHourStart(){
     return start;
 }
 
-// Set PTB at hour boundary
+// Track which hour we've set PTB for
+let ptbHour=-1;
+let ptbSource='';
+
+// Called every time we get a Chainlink price update
 function checkPtb(){
     const now=new Date();
-    if(!ptbSetAt||ptbSetAt.getHours()!==now.getHours()){
-        if(btcPrice){
-            if(now.getMinutes()<5){
-                // Fresh hour — set PTB from current Chainlink price (matches Polymarket)
-                ptb=btcPrice;
-                ptbSetAt=now;
-                realPtbFetched=true; // This IS the real one since we're at the boundary
-                locked=false;
-                prediction=null;
-                console.log('🎯 PTB set (hour boundary): $'+ptb.toFixed(2));
-            }else if(!ptb&&!realPtbFetched){
-                // Mid-hour join — try to get real PTB from Polymarket first
-                fetchRealPtb().then(found=>{
-                    if(!found&&btcPrice&&!ptb){
-                        // Couldn't get real PTB — use Binance hourly open as fallback
-                        fetchHourlyOpen();
-                    }
-                });
-            }
+    const currentHour=now.getHours();
+    
+    // Already set for this hour? Skip.
+    if(ptbHour===currentHour)return;
+    
+    if(btcPrice){
+        if(now.getMinutes()===0||(now.getMinutes()<=1&&ptbHour!==currentHour)){
+            // We're at the hour boundary — this Chainlink price IS the PTB
+            ptb=btcPrice;
+            ptbSetAt=now;
+            ptbHour=currentHour;
+            ptbSource='Chainlink (live)';
+            locked=false;
+            prediction=null;
+            console.log('🎯 PTB set from Chainlink at boundary: $'+ptb.toFixed(2));
+        }else if(ptbHour!==currentHour){
+            // Mid-hour join — fetch the actual hour open from Binance
+            ptbHour=currentHour; // Prevent multiple fetches
+            fetchHourlyOpen();
         }
     }
 }
 
-// Fallback: get the hourly candle open from Binance
+// Get the hourly candle open price from Binance (very close to Chainlink)
 async function fetchHourlyOpen(){
     try{
-        const now=new Date();
-        const hourStart=new Date(now.getFullYear(),now.getMonth(),now.getDate(),now.getHours(),0,0);
+        const hourStart=getHourStart();
         const startMs=hourStart.getTime();
         const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&startTime='+startMs+'&limit=1');
         const d=await r.json();
         if(d&&d[0]){
             const openPrice=parseFloat(d[0][1]);
-            if(openPrice>50000&&openPrice<200000){
+            if(openPrice>30000&&openPrice<200000){
                 ptb=openPrice;
-                ptbSetAt=new Date(d[0][0]);
+                ptbSetAt=getHourStart();
+                ptbSource='Binance hourly open';
                 locked=false;
                 prediction=null;
                 console.log('🎯 PTB from Binance hourly open: $'+ptb.toFixed(2));
-                document.getElementById('ptbTime').textContent='Set from Binance hourly open';
                 return;
             }
         }
-    }catch(e){console.log('Binance hourly open fetch failed:',e)}
+    }catch(e){console.log('Binance fetch failed, using current price')}
     
-    // Last resort: use current price
-    if(btcPrice&&!ptb){
+    // Last resort
+    if(btcPrice){
         ptb=btcPrice;
         ptbSetAt=new Date();
+        ptbSource='current price (approx)';
         locked=false;
         prediction=null;
-        console.log('⚠️ PTB fallback to current price: $'+ptb.toFixed(2));
-        document.getElementById('ptbTime').textContent='Set at join (approx)';
+        console.log('⚠️ PTB fallback: $'+ptb.toFixed(2));
     }
 }
 
@@ -456,7 +408,7 @@ function updateUI(){
 
     if(ptb){
         document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        document.getElementById('ptbTime').textContent='Set at '+ptbSetAt.toLocaleTimeString();
+        document.getElementById('ptbTime').textContent=(ptbSource||'Set at hour mark');
         const d=btcPrice-ptb,p=(d/ptb*100).toFixed(3);
         document.getElementById('vsComparison').innerHTML=d>0?
             '<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':
