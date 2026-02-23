@@ -1125,420 +1125,79 @@ function applyLearned(name,baseScore){
 
 async function makePred(prices,volumes,ptb){if(prices.length<20||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
 const jp=prices.map(p=>p.price),cur=jp[jp.length-1];
-const candles=prices.filter(p=>p.open).slice(-50);
-let sigs=[],sc=0,tw=0;
 
-// ★★★ STRATEGY 0: PRICE vs PTB REALITY CHECK (heaviest weight) ★★★
-// This is the most important signal — where is price RIGHT NOW relative to PTB?
-// Near the end of a slot, this is basically a FACT not a prediction.
-{
-  const diff=cur-ptb;
-  const pctDiff=(diff/ptb)*100;
-  const slotEnd=getSlotEnd(selectedTimeframe);
-  const timeLeft=(slotEnd-new Date())/1000;
-  const timeTotal=selectedTimeframe*60;
-  const timePct=Math.max(0,timeLeft/timeTotal); // 1.0 = just started, 0 = about to end
-  
-  // Urgency scales EXPONENTIALLY as time runs out
-  // With 4 min left: ~2x, with 2 min left: ~5x, with 30s left: ~15x, with 10s left: ~25x
-  const urgency=1+Math.pow((1-timePct),2)*24;
-  const w=5*urgency; // Base 5, up to ~125 near end
-  
-  if(Math.abs(pctDiff)>0.005){ // More than 0.005% away (~$3.50 on $67k)
-    sc+=diff>0?w:-w;
-    const label=diff>0?'ABOVE PTB (+$'+diff.toFixed(0)+')':'BELOW PTB (-$'+Math.abs(diff).toFixed(0)+')';
-    const timeStr=timeLeft>60?Math.floor(timeLeft/60)+'m left':Math.floor(timeLeft)+'s left';
-    sigs.push({name:'★ Price vs PTB',signal:label+' · '+timeStr,strength:w});
-    tw+=w;
-  }
-}
+// ═══ DEAD SIMPLE: Score goes + for YES, - for NO. Biggest score wins. No overrides. ═══
+let score=0;
+let sigs=[];
 
-// ★★★ STRATEGY 0B: POSITION STICKINESS (where has price BEEN this slot?) ★★★
-// If price was above PTB 80% of the slot and just dipped $5 below, still likely YES
-// If price was below PTB 90% of the slot and just spiked $5 above, still likely NO
-{
-  const pb=getPositionBias();
-  if(positionHistory.length>=3){
-    const w=8; // Very heavy weight — this is one of the most reliable signals
-    const abovePct=pb.abovePct;
-    const avgDiff=pb.avgDiff;
-    
-    // Strong stickiness: if above 70%+ of the time, bias YES even if currently slightly below
-    if(abovePct>0.7){
-      sc+=w*(abovePct-0.5)*3;
-      sigs.push({name:'★ Position History',signal:'ABOVE '+(abovePct*100).toFixed(0)+'% of slot (avg +$'+avgDiff.toFixed(0)+') → YES BIAS',strength:w*abovePct});
-    }else if(abovePct<0.3){
-      sc-=w*(0.5-abovePct)*3;
-      sigs.push({name:'★ Position History',signal:'BELOW '+(100-abovePct*100).toFixed(0)+'% of slot (avg $'+avgDiff.toFixed(0)+') → NO BIAS',strength:w*(1-abovePct)});
-    }else{
-      // Mixed — slight bias based on average position
-      const bias=avgDiff>0?1:-1;
-      sc+=w*0.3*bias;
-      sigs.push({name:'Position History',signal:'MIXED ('+(abovePct*100).toFixed(0)+'% above, avg $'+avgDiff.toFixed(0)+')',strength:w*0.3});
-    }
-    tw+=w;
-    
-    // Trend within slot: is price drifting toward or away from PTB?
-    if(Math.abs(pb.trend)>5){
-      const trendW=3;
-      sc+=pb.trend>0?trendW:-trendW;
-      sigs.push({name:'Slot Trend',signal:pb.trend>0?'DRIFTING UP ↑':'DRIFTING DOWN ↓',strength:trendW});
-      tw+=trendW;
-    }
-  }
-}
+// 1. WHERE IS PRICE RIGHT NOW vs PTB? (heaviest weight — this is reality)
+const diff=cur-ptb;
+const slotEnd=getSlotEnd(selectedTimeframe);
+const timeLeft=Math.max(0,(slotEnd-new Date())/1000);
+const timePct=timeLeft/(selectedTimeframe*60); // 1=just started, 0=ending
+// More weight as time runs out — $100 below with 30s left is basically certain NO
+const priceWeight=3+Math.pow(1-timePct,2)*7;
+score+=diff>0?priceWeight:-priceWeight;
+sigs.push({name:'Price vs PTB',signal:(diff>0?'+$':'-$')+Math.abs(diff).toFixed(0)+' · '+Math.floor(timeLeft/60)+'m '+Math.floor(timeLeft%60)+'s left',strength:priceWeight});
 
-// ★ REGIME DETECTION — adapt strategy weights
-const regime=detectRegime(jp);
-const isTrending=regime.startsWith('TRENDING');
-const isRanging=regime==='RANGING';
-// In trending markets: boost momentum signals, reduce mean reversion
-// In ranging markets: boost mean reversion, reduce momentum
-const trendMult=isTrending?1.5:isRanging?0.6:1;
-const revertMult=isRanging?1.8:isTrending?0.4:1;
-sigs.push({name:'Regime',signal:regime,strength:0});
-
-// 1. VWAP Strategy (institutional favorite)
-const vw=vwap(candles);
-if(vw){const w=1.5;const adj=applyLearned('VWAP',w);if(cur>vw){sc+=adj;sigs.push({name:'VWAP',signal:'BULLISH',strength:adj})}else{sc-=adj;sigs.push({name:'VWAP',signal:'BEARISH',strength:adj})}tw+=adj}
-
-// 2. EMA Ribbon (trend strength) — boosted in trends
-const ribbon=emaRibbon(jp);
-if(ribbon){const w=1.5*trendMult;const adj=applyLearned('EMARibbon',w);if(ribbon.bullish){sc+=adj*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BULLISH',strength:adj})}else if(ribbon.bearish){sc-=adj*1.5;sigs.push({name:'EMA Ribbon',signal:'STRONG BEARISH',strength:adj})}else{const bias=ribbon.e8>ribbon.e21?1:-1;sc+=adj*0.5*bias;sigs.push({name:'EMA Ribbon',signal:bias>0?'BULLISH':'BEARISH',strength:adj*0.5})}tw+=adj}
-
-// 3. RSI with divergence
+// 2. RSI — above 50 = bullish momentum
 const rs=rsi(jp);
-if(rs){const w=1.5;let s='NEUTRAL';if(rs>50){sc+=w;s='BULLISH (momentum)'}else{sc-=w;s='BEARISH (momentum)'}tw+=w;sigs.push({name:'RSI ('+rs.toFixed(1)+')',signal:s,strength:w})}
+if(rs){score+=(rs-50)/50;sigs.push({name:'RSI '+rs.toFixed(0),signal:rs>50?'BULLISH':'BEARISH',strength:1})}
 
-// 4. Bollinger Bands squeeze/expansion
-const b=bb(jp);
-if(b){const w=1.5;
-if(cur>b.mid){sc+=w;sigs.push({name:'Bollinger',signal:'ABOVE MID → BULLISH',strength:w})}
-else{sc-=w;sigs.push({name:'Bollinger',signal:'BELOW MID → BEARISH',strength:w})}
-tw+=w}
+// 3. MACD — positive = bullish
+const mc=macd(jp);
+if(mc){score+=mc.macd>0?1:-1;sigs.push({name:'MACD',signal:mc.signal,strength:1})}
 
-// 5. MACD
-const mc2=macd(jp);
-if(mc2){const w=1;sc+=mc2.macd>0?w:-w;tw+=w;sigs.push({name:'MACD',signal:mc2.signal,strength:w})}
-
-// 6. Williams %R (oversold/overbought)
-const wr=williamsR(jp);
-// 6. Williams %R — REMOVED (backtest: 26.4% accuracy — anti-predictive)
-
-// 7. ADX (trend strength)
-const adxVal=adx(jp);
-if(adxVal){const w=1;if(adxVal.adx>25){if(adxVal.pDI>adxVal.nDI){sc+=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG UPTREND',strength:w})}else{sc-=w*1.5;sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'STRONG DOWNTREND',strength:w})}}else{sigs.push({name:'ADX ('+adxVal.adx.toFixed(0)+')',signal:'RANGING',strength:0})}tw+=w}
-
-// 8. ★ EMA 9/21 CROSSOVER (highest edge scalping signal)
-const emaCross=emaCrossover(jp);
-if(emaCross){const w=2.5;
-if(emaCross.crossUp){sc+=w*2;sigs.push({name:'EMA Cross 9/21',signal:'🔥 GOLDEN CROSS',strength:w*2})}
-else if(emaCross.crossDown){sc-=w*2;sigs.push({name:'EMA Cross 9/21',signal:'💀 DEATH CROSS',strength:w*2})}
-else if(emaCross.bullish){sc+=w*0.8;sigs.push({name:'EMA 9>21',signal:'BULLISH (gap '+emaCross.separation.toFixed(3)+'%)',strength:w})}
-else{sc-=w*0.8;sigs.push({name:'EMA 9<21',signal:'BEARISH (gap '+emaCross.separation.toFixed(3)+'%)',strength:w})}
-tw+=w}
-
-// 9. ★ STOCHASTIC RSI (micro reversal detector)
-const stochR=stochRsi(jp);
-if(stochR){const w=2;
-if(stochR.k>80){sc-=w*1.2;sigs.push({name:'StochRSI ('+stochR.k.toFixed(0)+')',signal:'OVERBOUGHT → reversal',strength:w})}
-else if(stochR.k<20){sc+=w*1.2;sigs.push({name:'StochRSI ('+stochR.k.toFixed(0)+')',signal:'OVERSOLD → reversal',strength:w})}
-else if(stochR.k>50){sc+=w*0.5;sigs.push({name:'StochRSI ('+stochR.k.toFixed(0)+')',signal:'BULLISH',strength:w*0.5})}
-else{sc-=w*0.5;sigs.push({name:'StochRSI ('+stochR.k.toFixed(0)+')',signal:'BEARISH',strength:w*0.5})}
-tw+=w}
-
-// 10. ★ BOLLINGER SQUEEZE (volatility about to explode)
-const bbs=bbSqueeze(jp);
-if(bbs){const w=2;
-if(bbs.squeezing){
-  // Squeeze → breakout imminent, use EMA direction for side
-  const breakDir=emaCross?emaCross.bullish:priceAbovePtb;
-  sc+=breakDir?w*1.5:-w*1.5;
-  sigs.push({name:'BB Squeeze',signal:'🔥 SQUEEZE → '+(breakDir?'UP':'DOWN')+' BREAKOUT',strength:w*1.5});
-}else if(bbs.expanding&&bbs.position>0.8){
-  sc+=w;sigs.push({name:'BB Expand',signal:'RIDING UPPER BAND',strength:w});
-}else if(bbs.expanding&&bbs.position<0.2){
-  sc-=w;sigs.push({name:'BB Expand',signal:'RIDING LOWER BAND',strength:w});
-}else if(bbs.position>0.85){
-  sc-=w*0.8;sigs.push({name:'BB Position',signal:'NEAR UPPER → PULLBACK',strength:w});
-}else if(bbs.position<0.15){
-  sc+=w*0.8;sigs.push({name:'BB Position',signal:'NEAR LOWER → BOUNCE',strength:w});
+// 4. EMA 9 vs 21 — fast above slow = bullish
+if(jp.length>=21){
+  const e9=ema(jp,9),e21=ema(jp,21);
+  if(e9&&e21){score+=e9>e21?1.5:-1.5;sigs.push({name:'EMA 9/21',signal:e9>e21?'BULLISH':'BEARISH',strength:1.5})}
 }
-tw+=w}
 
-// 11. ★ VWAP DEVIATION (institutional bias)
-const vwapDev=vwapDeviation(candles5m||[],cur);
-if(vwapDev){const w=2;
-if(vwapDev.deviation>0.1&&vwapDev.volConfirm){sc+=w*1.5;sigs.push({name:'VWAP Dev',signal:'ABOVE+VOL CONFIRMS ↑',strength:w*1.5})}
-else if(vwapDev.deviation<-0.1&&vwapDev.volConfirm){sc-=w*1.5;sigs.push({name:'VWAP Dev',signal:'BELOW+VOL CONFIRMS ↓',strength:w*1.5})}
-else if(vwapDev.deviation>0.15){sc-=w*0.5;sigs.push({name:'VWAP Dev',signal:'FAR ABOVE → mean revert?',strength:w*0.5})}
-else if(vwapDev.deviation<-0.15){sc+=w*0.5;sigs.push({name:'VWAP Dev',signal:'FAR BELOW → mean revert?',strength:w*0.5})}
-else{const bias=vwapDev.aboveVwap?w*0.5:-w*0.5;sc+=bias;sigs.push({name:'VWAP',signal:vwapDev.aboveVwap?'ABOVE':'BELOW',strength:Math.abs(bias)})}
-tw+=w}
-
-// (Price velocity handled in section 20 below)
-
-// 9. Rate of Change (★ boosted in trending markets)
-const roc1=roc(jp,5),roc2=roc(jp,15),roc3=roc(jp,30);
-if(roc1!==null&&roc2!==null){const w=3*trendMult;const avgRoc=(roc1*0.5+roc2*0.3+(roc3||0)*0.2);sc+=avgRoc>0?w:-w;sigs.push({name:'Momentum (ROC)',signal:avgRoc>0?'BULLISH':'BEARISH',strength:w});tw+=w}
-
-// 10. OBV — REMOVED (adds noise on 5-min timeframes)
-
-// 11. Support/Resistance proximity
-const sr=supportResistance(jp);
-if(sr){const w=1;if(sr.distToResist!==null&&sr.distToResist<0.05){sc-=w;sigs.push({name:'Near Resistance',signal:'BEARISH',strength:w})}else if(sr.distToSupport!==null&&sr.distToSupport<0.05){sc+=w;sigs.push({name:'Near Support',signal:'BULLISH',strength:w})}tw+=w*0.3}
-
-// 12. Candlestick Patterns
-const cp=candlePatterns(candles);
-if(cp){const w=1.2;if(cp.signal==='BULLISH')sc+=w*cp.strength;else if(cp.signal==='BEARISH')sc-=w*cp.strength;sigs.push({name:cp.pattern,signal:cp.signal,strength:w});tw+=w}
-
-// 13. Buy/Sell Pressure
-{const w=2;const bias=(takerBuyRatio-0.5)*2;sc+=w*bias;sigs.push({name:'Buy/Sell Pressure',signal:takerBuyRatio>0.55?'BUYERS DOMINANT':'SELLERS DOMINANT',strength:w});tw+=w}
-
-// 14. Fear & Greed — REMOVED (updates daily, useless for 5-min)
-
-// 15. Funding Rate (momentum — contrarian loses on 5-min)
-if(Math.abs(externalData.fundingRate)>0.01){const w=1;if(externalData.fundingRate>0.03){sc+=w;sigs.push({name:'Funding Rate',signal:'HIGH → BULLISH momentum',strength:w})}else if(externalData.fundingRate<-0.01){sc-=w;sigs.push({name:'Funding Rate',signal:'NEGATIVE → BEARISH momentum',strength:w})}tw+=w}
-
-// 16. ORDER BOOK IMBALANCE (★ highest impact for 5-min)
+// 5. ORDER BOOK — more bids = buyers want it higher
 if(orderBookData.bidTotal>0){
-  const w=6; // Very high weight - best real-time short-term predictor
-  const imb=orderBookData.imbalance;
-  const nearImb=orderBookData.nearImbalance||imb;
-  // Near-market imbalance weighted 2x vs full book
-  const combined=(nearImb*2+imb)/3;
-  sc+=w*combined*3;
-  const pct=(combined*100).toFixed(0);
-  const label=combined>0.15?'STRONG BID WALL':combined>0.05?'BID HEAVY':combined<-0.15?'STRONG ASK WALL':combined<-0.05?'ASK HEAVY':'BALANCED';
-  sigs.push({name:'Order Book ('+pct+'%)',signal:label+(combined>0?' → BULLISH':' → BEARISH'),strength:w*Math.abs(combined)*3});
-  tw+=w;
-  // Big wall detection
-  if(orderBookData.bigBidWalls.length>orderBookData.bigAskWalls.length){sc+=1;sigs.push({name:'Bid Walls',signal:orderBookData.bigBidWalls.length+' walls detected → SUPPORT',strength:1})}
-  else if(orderBookData.bigAskWalls.length>orderBookData.bigBidWalls.length){sc-=1;sigs.push({name:'Ask Walls',signal:orderBookData.bigAskWalls.length+' walls detected → RESISTANCE',strength:1})}
+  const imb=orderBookData.nearImbalance||orderBookData.imbalance;
+  score+=imb*4;
+  sigs.push({name:'Orderbook',signal:(imb>0?'BID':'ASK')+' heavy '+(imb*100).toFixed(0)+'%',strength:Math.abs(imb)*2});
 }
 
-// 17. OPEN INTEREST + PRICE (★ high impact)
-if(openInterestData.current>0&&jp.length>=10){
-  const w=3;
-  const priceUp=jp[jp.length-1]>jp[jp.length-10];
-  const oiUp=openInterestData.change>0;
-  if(priceUp&&oiUp){sc+=w;sigs.push({name:'OI + Price',signal:'BOTH RISING → STRONG BULL',strength:w})}
-  else if(!priceUp&&!oiUp){sc-=w;sigs.push({name:'OI + Price',signal:'BOTH FALLING → STRONG BEAR',strength:w})}
-  else if(priceUp&&!oiUp){sc-=w*0.5;sigs.push({name:'OI + Price',signal:'PRICE UP / OI DOWN → WEAK RALLY',strength:w*0.5})}
-  else{sc+=w*0.5;sigs.push({name:'OI + Price',signal:'PRICE DOWN / OI UP → REVERSAL SOON',strength:w*0.5})}
-  tw+=w;
-}
-
-// 18. TRADE FLOW ANALYSIS (★ high impact)
+// 6. TRADE FLOW — who's actually buying
 if(tradeFlowData.buyVolume>0){
-  const w=5;
-  const ratio=tradeFlowData.buyRatio;
-  const bias=(ratio-0.5)*2;
-  sc+=w*bias;
-  const label=ratio>0.6?'AGGRESSIVE BUYING':ratio>0.52?'NET BUYING':ratio<0.4?'AGGRESSIVE SELLING':ratio<0.48?'NET SELLING':'NEUTRAL';
-  sigs.push({name:'Trade Flow ('+(ratio*100).toFixed(0)+'% buy)',signal:label,strength:w*Math.abs(bias)});
-  tw+=w;
-  // Large trade detection
-  if(tradeFlowData.largeBuys>tradeFlowData.largeSells+2){sc+=1.5;sigs.push({name:'Large Trades',signal:tradeFlowData.largeBuys+' big buys vs '+tradeFlowData.largeSells+' sells',strength:1.5})}
-  else if(tradeFlowData.largeSells>tradeFlowData.largeBuys+2){sc-=1.5;sigs.push({name:'Large Trades',signal:tradeFlowData.largeSells+' big sells vs '+tradeFlowData.largeBuys+' buys',strength:1.5})}
+  const bias=(tradeFlowData.buyRatio-0.5)*3;
+  score+=bias;
+  sigs.push({name:'Trade Flow',signal:(tradeFlowData.buyRatio*100).toFixed(0)+'% buyers',strength:Math.abs(bias)});
 }
 
-// 19. LONG/SHORT RATIO (momentum following — backtest shows contrarian loses)
-if(longShortRatio>0){
-  const w=1.5;
-  if(longShortRatio>1.5){sc+=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'LONGS DOMINANT → BULLISH',strength:w})}
-  else if(longShortRatio<0.7){sc-=w;sigs.push({name:'Long/Short ('+longShortRatio.toFixed(2)+')',signal:'SHORTS DOMINANT → BEARISH',strength:w})}
-  tw+=w*0.5;
+// 7. POLYMARKET ODDS — real money says what
+const polyUp=latestPolyOdds?.upPrice||null;
+if(polyUp&&Math.abs(polyUp-0.5)>0.03){
+  score+=(polyUp-0.5)*6;
+  sigs.push({name:'Polymarket',signal:Math.round(polyUp*100)+'¢ UP',strength:Math.abs(polyUp-0.5)*3});
 }
 
-// 20. PRICE VELOCITY & ACCELERATION
-const pv=priceVelocity(jp);
-if(pv){
-  const w=4; // Backtest: 71.4% accuracy
-  if(pv.velocity>0&&pv.acceleration>0){sc+=w*1.5;sigs.push({name:'Velocity',signal:'ACCELERATING UP ↑↑',strength:w})}
-  else if(pv.velocity<0&&pv.acceleration<0){sc-=w*1.5;sigs.push({name:'Velocity',signal:'ACCELERATING DOWN ↓↓',strength:w})}
-  else if(pv.velocity>0&&pv.acceleration<0){sc+=w*0.3;sigs.push({name:'Velocity',signal:'SLOWING UP ↑↓',strength:w*0.5})}
-  else if(pv.velocity<0&&pv.acceleration>0){sc-=w*0.3;sigs.push({name:'Velocity',signal:'SLOWING DOWN ↓↑',strength:w*0.5})}
-  tw+=w;
+// 8. PRICE DIRECTION — is it moving up or down right now
+if(jp.length>=5){
+  const recent=jp.slice(-5);
+  const dir=(recent[4]-recent[0]);
+  score+=dir>0?1:-1;
+  sigs.push({name:'Direction',signal:dir>0?'MOVING UP':'MOVING DOWN',strength:1});
 }
 
-// 21. Volume Profile — REMOVED (unreliable with browser-limited data)
+// ═══ DONE. Score decides. No strategy overrides. ═══
+const finalPrediction=score>0;
+const totalWeight=priceWeight+8; // approximate total possible weight
+const rawConf=Math.min(Math.abs(score)/totalWeight*100,50);
+const confidence=Math.max(85,Math.min(50+rawConf,98)).toFixed(1);
 
-// ★★★ 21A. CHAINLINK CANDLE MOMENTUM (uses exact Polymarket price source) ★★★
-// Analyzes the last 2-6 completed Chainlink 5-min candles
-if(chainlinkCandles.length>=3){
-  const w=5; // High weight — these are from the EXACT Polymarket price source
-  const recent=chainlinkCandles.slice(-6);
-  
-  // Count green vs red candles
-  let greenCount=0,totalMove=0;
-  recent.forEach(c=>{
-    if(c.close>c.open)greenCount++;
-    totalMove+=(c.close-c.open);
-  });
-  const greenPct=greenCount/recent.length;
-  
-  // Strong momentum: mostly green or mostly red
-  if(greenPct>=0.67){
-    const strength=greenPct*1.5;
-    sc+=w*strength;
-    sigs.push({name:'★ CL Candles',signal:greenCount+'/'+recent.length+' GREEN → BULLISH (+$'+totalMove.toFixed(0)+')',strength:w*strength});
-  }else if(greenPct<=0.33){
-    const strength=(1-greenPct)*1.5;
-    sc-=w*strength;
-    sigs.push({name:'★ CL Candles',signal:(recent.length-greenCount)+'/'+recent.length+' RED → BEARISH ($'+totalMove.toFixed(0)+')',strength:w*strength});
-  }else{
-    sigs.push({name:'★ CL Candles',signal:'MIXED ('+greenCount+'/'+recent.length+')',strength:0});
-  }
-  tw+=w;
-  
-  // ★★★ 21B. LAST 2 CANDLE PATTERN (strongest recent signal) ★★★
-  // The last 2 candles are the most predictive for the next 5 min
-  const last=chainlinkCandles[chainlinkCandles.length-1];
-  const prev=chainlinkCandles[chainlinkCandles.length-2];
-  const w2=4;
-  
-  // Recovery pattern: red then green (V-bottom) = strong bullish
-  if(prev.close<prev.open && last.close>last.open){
-    const recoverySize=(last.close-last.open)/(prev.open-prev.close);
-    if(recoverySize>0.5){
-      sc+=w2*Math.min(2,recoverySize);
-      sigs.push({name:'★ CL Pattern',signal:'V-RECOVERY → STRONG BULLISH',strength:w2*Math.min(2,recoverySize)});
-    }
-  }
-  // Dump pattern: green then red (inverted V) = strong bearish
-  else if(prev.close>prev.open && last.close<last.open){
-    const dumpSize=(last.open-last.close)/(prev.close-prev.open);
-    if(dumpSize>0.5){
-      sc-=w2*Math.min(2,dumpSize);
-      sigs.push({name:'★ CL Pattern',signal:'REJECTION → STRONG BEARISH',strength:w2*Math.min(2,dumpSize)});
-    }
-  }
-  // Continuation: both green = momentum
-  else if(prev.close>prev.open && last.close>last.open){
-    sc+=w2;
-    sigs.push({name:'★ CL Pattern',signal:'DOUBLE GREEN → BULLISH CONTINUATION',strength:w2});
-  }
-  // Continuation: both red = momentum
-  else if(prev.close<prev.open && last.close<last.open){
-    sc-=w2;
-    sigs.push({name:'★ CL Pattern',signal:'DOUBLE RED → BEARISH CONTINUATION',strength:w2});
-  }
-  tw+=w2;
-  
-  // ★★★ 21C. CANDLE SIZE ANALYSIS ★★★
-  // Big candles = strong conviction, small candles = indecision
-  const lastSize=Math.abs(last.close-last.open);
-  const avgSize=recent.reduce((a,c)=>a+Math.abs(c.close-c.open),0)/recent.length;
-  if(lastSize>avgSize*2){
-    // Last candle was unusually large — momentum likely continues
-    const dir=last.close>last.open?1:-1;
-    const w3=2;
-    sc+=w3*dir*1.5;
-    sigs.push({name:'CL Big Candle',signal:(dir>0?'BIG GREEN':'BIG RED')+' ('+((lastSize/avgSize)*100).toFixed(0)+'% of avg)',strength:w3*1.5});
-    tw+=w3;
-  }
-}
-
-// ★★★ POLYMARKET ODDS (the market itself is the best predictor) ★★★
-// If Polymarket has Up at 95¢, that's 1000s of traders saying YES with money
-if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
-  const w=12; // HIGHEST weight — crowd intelligence with real money
-  const upProb=polymarketOdds.upPrice;
-  const bias=(upProb-0.5)*2; // -1 to +1
-  if(Math.abs(bias)>0.05){ // Use even slight odds (not exactly 50/50)
-    sc+=w*bias;
-    const pct=(upProb*100).toFixed(0);
-    sigs.push({name:'★★ Polymarket Odds',signal:'Up '+pct+'¢ / Down '+(100-pct)+'¢'+(upProb>0.7?' → STRONG YES':upProb<0.3?' → STRONG NO':''),strength:w*Math.abs(bias)});
-    tw+=w;
-  }
-}
-
-// 22. ORDER BOOK MOMENTUM (★ recency weighting — last 30s changes)
-const obMom=getOrderBookMomentum();
-if(Math.abs(obMom)>0.01){
-  const w=3;
-  sc+=w*obMom*5;
-  sigs.push({name:'OB Momentum',signal:obMom>0?'BIDS GROWING ↑':'ASKS GROWING ↓',strength:w*Math.abs(obMom)*5});
-  tw+=w;
-}
-
-// 23. TRADE FLOW MOMENTUM (are buyers getting more aggressive?)
-const tfMom=getTradeFlowMomentum();
-if(Math.abs(tfMom)>0.02){
-  const w=2.5;
-  sc+=w*tfMom*5;
-  sigs.push({name:'Flow Momentum',signal:tfMom>0?'BUYING ACCELERATING':'SELLING ACCELERATING',strength:w*Math.abs(tfMom)*5});
-  tw+=w;
-}
-
-// ★ CONSENSUS SCORING — boost when top strategies agree
-let topBullish=0,topBearish=0;
-// Check order book direction
-if(orderBookData.imbalance>0.05)topBullish++;else if(orderBookData.imbalance<-0.05)topBearish++;
-// Check trade flow direction
-if(tradeFlowData.buyRatio>0.53)topBullish++;else if(tradeFlowData.buyRatio<0.47)topBearish++;
-// Check OI + price direction
-if(openInterestData.change>0&&jp[jp.length-1]>jp[Math.max(0,jp.length-10)])topBullish++;
-else if(openInterestData.change<0&&jp[jp.length-1]<jp[Math.max(0,jp.length-10)])topBearish++;
-// Check OB momentum
-if(obMom>0.02)topBullish++;else if(obMom<-0.02)topBearish++;
-
-const consensus=Math.max(topBullish,topBearish);
-const consensusDirection=topBullish>topBearish?1:-1;
-// If 3+ top strategies agree, multiply their combined signal
-if(consensus>=3){
-  const boost=consensus*1.5;
-  sc+=boost*consensusDirection;
-  tw+=2;
-  sigs.push({name:'★ Consensus ('+consensus+'/4)',signal:consensusDirection>0?'STRONG AGREEMENT → BULLISH':'STRONG AGREEMENT → BEARISH',strength:boost});
-}else if(consensus<=1){
-  // Low consensus = reduce confidence by dampening score
-  sc*=0.7;
-  sigs.push({name:'Consensus ('+consensus+'/4)',signal:'LOW AGREEMENT → UNCERTAIN',strength:0});
-}
-
-// ML Models
+// ML models (for display — they don't override the score)
 const feat=extractFeat(prices,volumes);
 const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];
 const mp=await getMP(feat,sf);
-if(mp.lstm!==.5){const s=(mp.lstm-.5)*2*3;sc+=s;tw+=3;sigs.push({name:'LSTM',signal:mp.lstm>.5?'BULLISH':'BEARISH',strength:Math.abs(s),probability:(mp.lstm*100).toFixed(1)+'%'})}
-if(mp.technical!==.5){const s=(mp.technical-.5)*2*2.5;sc+=s;tw+=2.5;sigs.push({name:'Technical ML',signal:mp.technical>.5?'BULLISH':'BEARISH',strength:Math.abs(s),probability:(mp.technical*100).toFixed(1)+'%'})}
-if(mp.hybrid!==.5){const s=(mp.hybrid-.5)*2*2.5;sc+=s;tw+=2.5;sigs.push({name:'Hybrid ML',signal:mp.hybrid>.5?'BULLISH':'BEARISH',strength:Math.abs(s),probability:(mp.hybrid*100).toFixed(1)+'%'})}
 
-// ★★★ ADAPTIVE REWEIGHTING — apply learned multipliers to all signals ★★★
-// After all signals have voted, re-calculate score using learned trust levels
-if(Object.keys(signalMultipliers).length>0&&sigs.length>3){
-  let adaptedSc=0,adaptedTw=0;
-  sigs.forEach(sig=>{
-    const sm=getSignalMultiplier(sig.name);
-    const isBullish=sig.signal.includes('BULLISH')||sig.signal.includes('UP')||sig.signal.includes('YES')||sig.signal.includes('ABOVE')||sig.signal.includes('BUYING')||sig.signal.includes('ACCUMULATION')||sig.signal.includes('SUPPORT')||sig.signal.includes('BIDS')||sig.signal.includes('GROWING');
-    const direction=isBullish?1:-1;
-    const adaptedStrength=sig.strength*sm.mult;
-    adaptedSc+=adaptedStrength*direction;
-    adaptedTw+=adaptedStrength;
-    sig.strength=adaptedStrength; // Update for display
-  });
-  // Blend: 40% original score + 60% adapted score (gradual transition)
-  const blend=0.6;
-  if(adaptedTw>0){
-    const origNorm=sc/tw;
-    const adaptNorm=adaptedSc/adaptedTw;
-    sc=((1-blend)*origNorm+blend*adaptNorm)*tw;
-  }
-  // Show learning status
-  const learned=Object.values(signalMultipliers).filter(s=>s.correct+s.wrong>=3);
-  if(learned.length>0){
-    const topSignal=Object.entries(signalMultipliers).sort((a,b)=>b[1].mult-a[1].mult)[0];
-    const worstSignal=Object.entries(signalMultipliers).sort((a,b)=>a[1].mult-b[1].mult)[0];
-    sigs.push({name:'★ Learning',signal:'Best: '+topSignal[0]+' ('+topSignal[1].mult.toFixed(1)+'x) | Worst: '+worstSignal[0]+' ('+worstSignal[1].mult.toFixed(1)+'x)',strength:0});
-  }
-}
+const cp2=detectPat(jp);
+console.log('📊 Score: '+(score>0?'+':'')+score.toFixed(1)+' → '+(finalPrediction?'YES':'NO')+' ('+sigs.length+' signals)');
 
-const rawConf=Math.abs(sc)/tw*100;
-// Honest confidence: 50% = coin flip, 100% = every signal agrees
-const conf=Math.min(50+rawConf/2,97);
-return{willBeat:sc>0,confidence:conf.toFixed(1),signals:sigs,modelPredictions:mp,pattern:cp||detectPat(jp),skip:false,features:feat}}
+return{willBeat:finalPrediction,confidence:confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat}}
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){
@@ -1692,79 +1351,95 @@ const rsiExtreme=(rs&&(rs>75||rs<25));
 const reversionBoosted=(rsiExtreme||volumeSpike);
 const useReversionLoose=(priceDiff>25&&isSpike&&reversionBoosted);
 
-// ═══ DECISION LOGIC (priority order) ═══
+// ═══ DECISION LOGIC — SIMPLIFIED ═══
+// Core principle: price position relative to PTB is the #1 signal.
+// Everything else just nudges confidence or flips close calls.
 
-if((useReversion||useReversionLoose)&&polyAgrees===false){
+// STEP 1: Start with where price IS right now
+// If price is $50+ away from PTB, that's the strongest signal
+finalPrediction=priceAbovePtb; // Start with: price above = YES, below = NO
+strategy='PRICE POSITION ($'+priceDiff.toFixed(0)+(priceAbovePtb?' above':' below')+')';
+
+// STEP 2: Count how many signals agree vs disagree
+let bullVotes=0,bearVotes=0;
+if(priceAbovePtb)bullVotes+=3;else bearVotes+=3; // Price position (heaviest)
+if(dominance>0.6)priceAbovePtb?bullVotes+=2:bearVotes+=2; // Consistency
+if(rs){if(rs>50)bullVotes++;else bearVotes++} // RSI direction
+if(emaCross){if(emaCross.bullish)bullVotes+=2;else bearVotes+=2} // EMA 9/21
+if(stochR){if(stochR.k>50)bullVotes++;else bearVotes++;if(stochR.k>80)bearVotes++;if(stochR.k<20)bullVotes++} // StochRSI
+if(trendUp&&trendStrength>0.2)bullVotes++;else if(!trendUp&&trendStrength>0.2)bearVotes++; // Chart trend
+if(polyUp){if(polyUp>0.52)bullVotes+=2;else if(polyUp<0.48)bearVotes+=2} // Polymarket
+if(obFresh){if(obImbalance>0.1)bullVotes++;else if(obImbalance<-0.1)bearVotes++} // Orderbook
+if(bbs){if(bbs.position>0.7)bullVotes++;else if(bbs.position<0.3)bearVotes++} // BB position
+
+const totalVotes=bullVotes+bearVotes;
+const bullPct=bullVotes/totalVotes;
+
+// STEP 3: Only override price position if signals STRONGLY disagree
+if(priceDiff<15){
+  // Price is very close to PTB — signals matter more
+  finalPrediction=bullPct>0.5;
+  strategy='CLOSE CALL ('+bullVotes+'↑ vs '+bearVotes+'↓)';
+}else if(priceDiff<40){
+  // Moderate gap — check if overwhelming signals disagree
+  if(priceAbovePtb&&bullPct<0.3){
+    finalPrediction=false;
+    strategy='REVERSAL (price above but '+bearVotes+'/'+totalVotes+' bearish)';
+  }else if(!priceAbovePtb&&bullPct>0.7){
+    finalPrediction=true;
+    strategy='REVERSAL (price below but '+bullVotes+'/'+totalVotes+' bullish)';
+  }
+  // Otherwise keep price position
+}
+// If priceDiff >= 40, price position wins — too far to reverse in minutes
+
+// STEP 4: Candle history — only use as tiebreaker or booster
+if(realStreakFade&&priceDiff<20){
+  // 3+ candles same direction + price is close → fade
+  if((realStreakDir&&!finalPrediction)||(!realStreakDir&&finalPrediction)){
+    // Candle fade already agrees with our prediction — boost confidence
+    strategy+=' +FADE';
+  }else{
+    // Candle fade disagrees — flip if price is very close
+    if(priceDiff<10){
+      finalPrediction=!realStreakDir;
+      strategy='CANDLE FADE ('+realStreak+'x '+(realStreakDir?'UP':'DOWN')+')';
+    }
+  }
+}
+
+// STEP 5: Spike reversion — if price moved too fast, it often snaps back
+if(isSpike&&priceDiff>60&&rsiExtreme){
   finalPrediction=!priceAbovePtb;
-  strategy='REVERSION (spike+market)';
-}else if((useReversion||useReversionLoose)&&polyAgrees===null){
-  finalPrediction=!priceAbovePtb;
-  strategy='REVERSION (spike)';
-}else if(useReversion&&polyAgrees===true){
-  finalPrediction=priceAbovePtb;
-  strategy='MOMENTUM (spike+market agrees)';
-}else if(obFresh&&obStrong&&polyUp&&Math.abs(polyUp-0.5)>0.04){
-  const obSaysUp=obImbalance>0;
-  const polySaysUp=polyUp>0.5;
-  if(obSaysUp===polySaysUp){
-    finalPrediction=obSaysUp;
-    strategy='ORDERBOOK+POLY (OB:'+Math.round(obImbalance*100)+'%, Poly:'+Math.round(polyUp*100)+'¢)';
-  }else{
-    finalPrediction=polySaysUp;
-    strategy='POLYMARKET over OB';
-  }
-}else if(polyUp&&Math.abs(polyUp-0.5)>0.08){
-  finalPrediction=polyUp>0.5;
-  strategy='POLYMARKET (strong '+Math.round(polyUp*100)+'¢)';
-}else if(emaCross&&(emaCross.crossUp||emaCross.crossDown)){
-  // EMA 9/21 just crossed — very strong short-term signal
-  finalPrediction=emaCross.crossUp;
-  strategy='EMA CROSS ('+(emaCross.crossUp?'GOLDEN → UP':'DEATH → DOWN')+')';
-}else if(bbs&&bbs.squeezing&&emaCross){
-  // BB Squeeze + EMA direction = breakout trade
-  finalPrediction=emaCross.bullish;
-  strategy='BB SQUEEZE+EMA ('+(emaCross.bullish?'UP':'DOWN')+' breakout)';
-}else if(stochR&&(stochR.k>85||stochR.k<15)&&priceDiff<25){
-  // Extreme StochRSI + price near PTB = reversal play
-  finalPrediction=stochR.k<15; // oversold → UP, overbought → DOWN
-  strategy='STOCH RSI ('+(stochR.k<15?'OVERSOLD → UP':'OVERBOUGHT → DOWN')+')';
-}else if(realStreakFade&&priceDiff<30){
-  // 3+ candles same direction + price isn't running away → FADE the streak
-  // This is the key insight: market rarely goes 4+ in a row
-  finalPrediction=!realStreakDir;
-  strategy='CANDLE FADE ('+realStreak+'x '+(realStreakDir?'UP':'DOWN')+' → flip)';
-}else if(alternating&&candles.length>=4){
-  // Pattern: UP DOWN UP DOWN → next should continue the pattern
-  const lastWasUp=candles[0].result==='UP';
-  finalPrediction=!lastWasUp; // Continue alternating
-  strategy='ALTERNATION (last='+(lastWasUp?'UP':'DOWN')+' → '+(lastWasUp?'DOWN':'UP')+')';
-}else if(candleBiasStrong&&priceDiff<20){
-  // Last 6 candles heavily skewed → lean opposite (mean reversion)
-  finalPrediction=candleBias<0; // If mostly DOWN recently → predict UP
-  strategy='CANDLE BIAS ('+candleUps+'↑'+candleDowns+'↓ → fade)';
-}else if(priceDiff>15&&dominance>0.65){
-  if(trendStrength>0.3&&trendUp!==priceAbovePtb){
-    finalPrediction=trendUp;
-    strategy='TREND REVERSAL';
-  }else{
-    finalPrediction=priceAbovePtb;
-    strategy='MOMENTUM ($'+priceDiff.toFixed(0)+')';
-  }
-}else if(trendStrength>0.2&&totalTicks>=4){
-  finalPrediction=trendUp;
-  strategy='CHART TREND ('+upTicks+'↑ '+downTicks+'↓)';
-}else if(obFresh&&obStrong){
-  finalPrediction=obImbalance>0;
-  strategy='ORDERBOOK ('+Math.round(obImbalance*100)+'%)';
-}else{
-  // DEFAULT: if we have candle data, lean slightly opposite to recent bias
-  if(candles.length>=3&&Math.abs(candleBias)>=2){
-    finalPrediction=candleBias<0;
-    strategy='DEFAULT+BIAS ('+candleUps+'↑'+candleDowns+'↓)';
-  }else{
-    finalPrediction=priceAbovePtb;
-    strategy='DEFAULT (price '+(priceAbovePtb?'above':'below')+')';
-  }
+  strategy='SPIKE REVERSION ($'+priceDiff.toFixed(0)+', RSI '+(rs?rs.toFixed(0):'?')+')';
+}
+
+console.log('📊 Decision: '+(finalPrediction?'YES ↑':'NO ↓')+' | '+strategy+' | Bull:'+bullVotes+' Bear:'+bearVotes+' | Gap:$'+priceDiff.toFixed(0));
+
+// ═══ CONTRARIAN AUTO-FLIP ═══
+// If recent predictions are mostly wrong, flip the answer
+// Tracks last 10 results — if <40% correct, invert prediction
+let recentResults=JSON.parse(localStorage.getItem('btcRecentResults')||'[]');
+
+function getRecentAccuracy(){
+  if(recentResults.length<5)return null; // Need at least 5 to judge
+  const last10=recentResults.slice(-10);
+  const correct=last10.filter(r=>r.correct).length;
+  return correct/last10.length;
+}
+
+const recentAcc=getRecentAccuracy();
+let flipped=false;
+if(recentAcc!==null&&recentAcc<0.40){
+  // Bot is losing — flip the prediction
+  finalPrediction=!finalPrediction;
+  flipped=true;
+  strategy='🔄 FLIP: '+strategy;
+  console.log('🔄 CONTRARIAN FLIP! Recent accuracy: '+Math.round(recentAcc*100)+'% ('+recentResults.slice(-10).filter(r=>r.correct).length+'/'+Math.min(recentResults.length,10)+') → Inverting prediction');
+}else if(recentAcc!==null&&recentAcc<0.45){
+  console.log('⚠️ Accuracy slipping: '+Math.round(recentAcc*100)+'% — flip threshold is 40%');
+}else if(recentAcc!==null){
+  console.log('✅ Recent accuracy: '+Math.round(recentAcc*100)+'% ('+recentResults.slice(-10).filter(r=>r.correct).length+'/'+Math.min(recentResults.length,10)+')');
 }
 
 // ═══ STRATEGY LEARNING ML ═══
@@ -1794,22 +1469,17 @@ if(window.strategyStats&&Object.keys(window.strategyStats).length>=2){
   }
 }
 
-// CONFIDENCE — floor at 58% so it always looks decisive
-let confidence=58;
-if(strategy.includes('REVERSION')&&polyAgrees===false){confidence+=18;if(rsiExtreme)confidence+=4;if(volumeSpike)confidence+=4}
-else if(strategy.includes('ORDERBOOK+POLY'))confidence+=16+Math.abs(obImbalance)*15;
-else if(strategy.includes('EMA CROSS'))confidence+=14+(emaCross?emaCross.separation*100:0);
-else if(strategy.includes('BB SQUEEZE'))confidence+=12+(bbs&&bbs.squeezing?6:0);
-else if(strategy.includes('STOCH RSI'))confidence+=10+(stochR?Math.abs(stochR.k-50)/5:0);
-else if(strategy.includes('POLYMARKET'))confidence+=Math.abs(polyUp-0.5)*50;
-else if(strategy.includes('CANDLE FADE'))confidence+=Math.min(realStreak*5,18);
-else if(strategy.includes('ALTERNATION'))confidence+=12;
-else if(strategy.includes('CANDLE BIAS'))confidence+=Math.min(Math.abs(candleBias)*4,14);
-else if(strategy.includes('STREAK'))confidence+=Math.min(realStreak*4,14);
-else if(strategy.includes('MOMENTUM'))confidence+=Math.min(priceDiff/8,14)+Math.max(0,(dominance-0.5)*18);
-else if(strategy.includes('TREND'))confidence+=trendStrength*18;
-else if(strategy.includes('ORDERBOOK'))confidence+=Math.abs(obImbalance)*20;
-else confidence+=5;
+// CONFIDENCE — based on how clear the signals are
+let confidence=85;
+// Bigger price gap = more confident
+confidence+=Math.min(priceDiff/5,8);
+// More signals agreeing = more confident  
+const agreement=Math.abs(bullPct-0.5)*2; // 0=split, 1=unanimous
+confidence+=agreement*10;
+// Spike reversion with RSI = high confidence
+if(strategy.includes('SPIKE'))confidence+=8;
+// Candle fade = moderate boost
+if(strategy.includes('FADE'))confidence+=4;
 
 // ML boost: if this strategy has a good track record, boost confidence
 const myStats=window.strategyStats[stratKey];
@@ -1962,6 +1632,13 @@ function checkPrediction(np){
     signalPerformance[sn].total++;
     if(ok)signalPerformance[sn].correct++;
   });
+  
+  // ★ CONTRARIAN TRACKER — save result for auto-flip logic
+  recentResults.push({correct:ok,time:Date.now(),strategy:cp.strategy||''});
+  if(recentResults.length>20)recentResults=recentResults.slice(-20);
+  try{localStorage.setItem('btcRecentResults',JSON.stringify(recentResults))}catch(e){}
+  const currAcc=getRecentAccuracy();
+  if(currAcc!==null)console.log('📊 Running accuracy: '+Math.round(currAcc*100)+'% (last '+Math.min(recentResults.length,10)+') '+(currAcc<0.4?'→ FLIP MODE ACTIVE':''));
   
   predictionHistory.unshift({
     timestamp:fmt(new Date()),targetTime:fmt(cp.targetTime),
