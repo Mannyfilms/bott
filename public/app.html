@@ -1169,7 +1169,7 @@ if(tradeFlowData.buyVolume>0){
 }
 
 // 7. POLYMARKET ODDS — real money says what
-const polyUp=latestPolyOdds?.upPrice||null;
+const polyUp=(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000)?polymarketOdds.upPrice:null;
 if(polyUp&&Math.abs(polyUp-0.5)>0.03){
   score+=(polyUp-0.5)*6;
   sigs.push({name:'Polymarket',signal:Math.round(polyUp*100)+'¢ UP',strength:Math.abs(polyUp-0.5)*3});
