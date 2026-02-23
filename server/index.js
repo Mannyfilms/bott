@@ -99,6 +99,30 @@ app.get('/api/ptb', requireAuth, (req, res) => {
   res.json({ price: null });
 });
 
+// ═══ HOURLY PTB (public — for free tier) ═══
+let serverHourlyPtb = { price: null, hour: -1, timestamp: 0 };
+
+app.post('/api/ptb-hourly', (req, res) => {
+  const { price, hour } = req.body;
+  if (price && price > 30000 && price < 200000 && hour >= 0 && hour <= 23) {
+    const currentHour = new Date().getUTCHours();
+    // Only accept if it's for the current hour
+    if (hour === currentHour) {
+      serverHourlyPtb = { price, hour, timestamp: Date.now() };
+      console.log('📌 Hourly PTB saved: $' + price.toFixed(2) + ' for hour ' + hour);
+    }
+  }
+  res.json({ ok: true });
+});
+
+app.get('/api/ptb-hourly', (req, res) => {
+  const currentHour = new Date().getUTCHours();
+  if (serverHourlyPtb.price && serverHourlyPtb.hour === currentHour && (Date.now() - serverHourlyPtb.timestamp) < 3600000) {
+    return res.json({ price: serverHourlyPtb.price, hour: serverHourlyPtb.hour });
+  }
+  res.json({ price: null });
+});
+
 // Logout
 app.post('/api/logout', (req, res) => {
   res.clearCookie('session');
