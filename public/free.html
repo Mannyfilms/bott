@@ -72,7 +72,7 @@
         <div class="status" id="status">Loading...</div>
         <div class="g2" style="margin-top:12px">
             <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbTime">Set at hour mark</div></div>
-            <div style="text-align:center"><div class="plbl">Current BTC</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
+            <div style="text-align:center"><div class="plbl">Current BTC Price</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
         </div>
         <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
     </div>
@@ -111,63 +111,65 @@
 // ═══ FREE TIER: 1-HOUR BTC PREDICTION ═══
 let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
 
-// Fetch BTC price via Polymarket Chainlink WebSocket
-let polyWs=null;
-function connectWs(){
+// ═══ PRICE FEEDS — SAME AS 5-MIN VERSION ═══
+// crypto_prices_chainlink = for PTB + resolution (what Polymarket uses to settle)
+// crypto_prices = for display (what Polymarket shows as "Current Price")
+let polyWs=null,latestChainlinkPrice=null,latestBtcPrice=null;
+
+function connectPolyWs(){
     try{
         polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
         polyWs.onopen=function(){
-            polyWs.send(JSON.stringify({action:'subscribe',subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]}));
+            polyWs.send(JSON.stringify({
+                action:'subscribe',
+                subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
+            }));
+            polyWs.send(JSON.stringify({
+                action:'subscribe',
+                subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
+            }));
+            console.log('Connected to Polymarket RTDS');
         };
         polyWs.onmessage=function(e){
             try{
                 const d=JSON.parse(e.data);
                 if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
+                    latestChainlinkPrice=d.payload.value;
+                }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
+                    latestBtcPrice=d.payload.value;
                     btcPrice=d.payload.value;
+                }
+                if(latestBtcPrice||latestChainlinkPrice){
+                    btcPrice=latestBtcPrice||latestChainlinkPrice;
                     updateUI();
                 }
-            }catch(e){}
+            }catch(ex){}
         };
-        polyWs.onclose=function(){setTimeout(connectWs,3000)};
+        let pingInterval=setInterval(()=>{
+            if(polyWs.readyState===1)polyWs.send('PING');
+            else{clearInterval(pingInterval)}
+        },5000);
+        polyWs.onclose=function(){clearInterval(pingInterval);setTimeout(connectPolyWs,3000)};
         polyWs.onerror=function(){polyWs.close()};
-    }catch(e){setTimeout(connectWs,5000)}
+    }catch(e){setTimeout(connectPolyWs,5000)}
 }
 
-// Backup: Binance
-let binWs=null;
-function connectBinance(){
+function connectBtcWs(){
     try{
-        binWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
-        binWs.onmessage=function(e){const d=JSON.parse(e.data);if(!btcPrice)btcPrice=parseFloat(d.p)};
-        binWs.onclose=function(){setTimeout(connectBinance,3000)};
-        binWs.onerror=function(){binWs.close()};
-    }catch(e){setTimeout(connectBinance,5000)}
+        const btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+        btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestBtcPrice){latestBtcPrice=parseFloat(d.p);btcPrice=parseFloat(d.p);updateUI()}else if(!latestChainlinkPrice){btcPrice=parseFloat(d.p);updateUI()}};
+        btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};
+        btcWs.onerror=function(){btcWs.close()};
+    }catch(e){setTimeout(connectBtcWs,5000)}
 }
 
-connectWs();
-connectBinance();
+connectPolyWs();
+connectBtcWs();
 
 // ═══ PTB: EXACT SAME APPROACH AS 5-MIN VERSION ═══
 // Timer fires at exact hour boundary, captures Chainlink price
 // Server shares PTB so late joiners get the real one
-let latestChainlinkPrice=null;
 let ptbHour=-1;
-
-// Patch WebSocket to also track Chainlink price
-function patchChainlinkTracking(){
-    if(!polyWs)return;
-    polyWs.onmessage=function(e){
-        try{
-            const d=JSON.parse(e.data);
-            if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
-                latestChainlinkPrice=d.payload.value;
-                btcPrice=d.payload.value;
-                updateUI();
-            }
-        }catch(ex){}
-    };
-}
-setTimeout(patchChainlinkTracking,1000);
 
 // Save PTB to server + localStorage
 function savePtb(price){
@@ -467,7 +469,7 @@ function updateUI(){
     document.getElementById('currentPrice').textContent='$'+btcPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 
-    // Store price history
+    // Store price history (for prediction logic)
     priceHistory.push({price:btcPrice,time:Date.now()});
     if(priceHistory.length>200)priceHistory.shift();
 
