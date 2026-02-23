@@ -120,13 +120,19 @@ function connectPolyWs(){
     try{
         polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
         polyWs.onopen=function(){
+            // Chainlink for PTB
             polyWs.send(JSON.stringify({
                 action:'subscribe',
                 subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
             }));
+            // Binance via Polymarket for display price — try both with and without filter
             polyWs.send(JSON.stringify({
                 action:'subscribe',
                 subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
+            }));
+            polyWs.send(JSON.stringify({
+                action:'subscribe',
+                subscriptions:[{topic:'crypto_prices',type:'update'}]
             }));
             console.log('Connected to Polymarket RTDS');
         };
@@ -135,12 +141,10 @@ function connectPolyWs(){
                 const d=JSON.parse(e.data);
                 if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
                     latestChainlinkPrice=d.payload.value;
-                }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
+                    if(!latestBtcPrice){btcPrice=d.payload.value;updateUI()}
+                }else if(d.topic==='crypto_prices'&&d.payload&&(d.payload.symbol==='btcusdt'||d.payload.symbol==='BTCUSDT')){
                     latestBtcPrice=d.payload.value;
                     btcPrice=d.payload.value;
-                }
-                if(latestBtcPrice||latestChainlinkPrice){
-                    btcPrice=latestBtcPrice||latestChainlinkPrice;
                     updateUI();
                 }
             }catch(ex){}
@@ -157,7 +161,13 @@ function connectPolyWs(){
 function connectBtcWs(){
     try{
         const btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
-        btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestBtcPrice){latestBtcPrice=parseFloat(d.p);btcPrice=parseFloat(d.p);updateUI()}else if(!latestChainlinkPrice){btcPrice=parseFloat(d.p);updateUI()}};
+        btcWs.onmessage=function(e){
+            const d=JSON.parse(e.data);
+            const p=parseFloat(d.p);
+            latestBtcPrice=p;
+            btcPrice=p;
+            updateUI();
+        };
         btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};
         btcWs.onerror=function(){btcWs.close()};
     }catch(e){setTimeout(connectBtcWs,5000)}
