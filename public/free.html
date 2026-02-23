@@ -149,13 +149,13 @@ connectBinance();
 
 // ═══ PTB: EXACT SAME APPROACH AS 5-MIN VERSION ═══
 // Timer fires at exact hour boundary, captures Chainlink price
+// Server shares PTB so late joiners get the real one
 let latestChainlinkPrice=null;
 let ptbHour=-1;
 
 // Patch WebSocket to also track Chainlink price
 function patchChainlinkTracking(){
     if(!polyWs)return;
-    const origHandler=polyWs.onmessage;
     polyWs.onmessage=function(e){
         try{
             const d=JSON.parse(e.data);
@@ -169,28 +169,50 @@ function patchChainlinkTracking(){
 }
 setTimeout(patchChainlinkTracking,1000);
 
-// Save/load PTB to localStorage (survives page refresh within same hour)
+// Save PTB to server + localStorage
 function savePtb(price){
-    const hour=new Date().getHours();
+    const hour=new Date().getUTCHours();
     localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now()}));
+    fetch('/api/ptb-hourly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,hour})}).catch(()=>{});
 }
 
-function loadPtb(){
+// Load PTB — try server first (other users may have captured it), then localStorage
+async function loadPtb(){
+    const currentHour=new Date().getUTCHours();
+    
+    // Try server first (captures from ANY user who had the page open at :00)
+    try{
+        const r=await fetch('/api/ptb-hourly');
+        const d=await r.json();
+        if(d.price&&d.hour===currentHour&&d.price>30000&&d.price<200000){
+            ptb=d.price;
+            ptbSetAt=new Date();
+            ptbSetAt.setMinutes(0,0,0);
+            ptbHour=currentHour;
+            console.log('📌 PTB from server (Chainlink): $'+d.price.toFixed(2));
+            return;
+        }
+    }catch(e){}
+    
+    // Try localStorage
     try{
         const d=JSON.parse(localStorage.getItem('ptb_hourly'));
-        const currentHour=new Date().getHours();
         if(d&&d.hour===currentHour&&d.price>30000&&d.price<200000&&(Date.now()-d.ts)<3600000){
             ptb=d.price;
             ptbSetAt=new Date();
             ptbSetAt.setMinutes(0,0,0);
             ptbHour=currentHour;
-            console.log('📌 PTB restored from cache: $'+d.price.toFixed(2));
+            console.log('📌 PTB from cache: $'+d.price.toFixed(2));
+            return;
         }
     }catch(e){}
+    
+    // No PTB available — don't set a fake one. Show waiting state.
+    console.log('⏳ No PTB available yet — waiting for server or next hour boundary');
 }
 loadPtb();
 
-// Timer at exact hour boundary — same as 5-min version's startPtbTimer
+// Timer at exact hour boundary
 function startPtbTimer(){
     const now=Date.now();
     const hourMs=3600000;
@@ -204,7 +226,7 @@ function startPtbTimer(){
         if(ptbPrice){
             ptb=ptbPrice;
             ptbSetAt=new Date();
-            ptbHour=new Date().getHours();
+            ptbHour=new Date().getUTCHours();
             locked=false;
             prediction=null;
             savePtb(ptbPrice);
@@ -215,7 +237,7 @@ function startPtbTimer(){
             if(p){
                 ptb=p;
                 ptbSetAt=new Date();
-                ptbHour=new Date().getHours();
+                ptbHour=new Date().getUTCHours();
                 locked=false;
                 prediction=null;
                 savePtb(p);
@@ -225,6 +247,30 @@ function startPtbTimer(){
     },delay);
 }
 startPtbTimer();
+
+// Retry loading PTB from server every 10s if we don't have one (someone else might save it)
+function retryPtbFromServer(){
+    if(ptb)return; // Already have one
+    const interval=setInterval(async()=>{
+        if(ptb){clearInterval(interval);return;}
+        try{
+            const currentHour=new Date().getUTCHours();
+            const r=await fetch('/api/ptb-hourly');
+            const d=await r.json();
+            if(d.price&&d.hour===currentHour){
+                ptb=d.price;
+                ptbSetAt=new Date();
+                ptbSetAt.setMinutes(0,0,0);
+                ptbHour=currentHour;
+                console.log('📌 PTB from server (retry): $'+d.price.toFixed(2));
+                clearInterval(interval);
+            }
+        }catch(e){}
+    },10000);
+    // Stop retrying after 5 minutes
+    setTimeout(()=>clearInterval(interval),300000);
+}
+retryPtbFromServer();
 
 function getHourEnd(){
     const now=new Date();
@@ -241,42 +287,8 @@ function getHourStart(){
     return start;
 }
 
-// For mid-hour joins only — fetch Binance hourly open as fallback
-function checkPtb(){
-    const now=new Date();
-    const currentHour=now.getHours();
-    if(ptbHour===currentHour)return;
-    if(btcPrice&&now.getMinutes()>=1){
-        ptbHour=currentHour;
-        fetchBinanceHourlyOpen();
-    }
-}
-
-async function fetchBinanceHourlyOpen(){
-    try{
-        const startMs=getHourStart().getTime();
-        const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&startTime='+startMs+'&limit=1');
-        const d=await r.json();
-        if(d&&d[0]){
-            const openPrice=parseFloat(d[0][1]);
-            if(openPrice>30000&&openPrice<200000){
-                ptb=openPrice;
-                ptbSetAt=getHourStart();
-                locked=false;
-                prediction=null;
-                savePtb(openPrice);
-                console.log('🎯 PTB from Binance hourly open (mid-join): $'+openPrice.toFixed(2));
-                return;
-            }
-        }
-    }catch(e){}
-    if(btcPrice&&!ptb){
-        ptb=btcPrice;
-        ptbSetAt=new Date();
-        locked=false;
-        prediction=null;
-    }
-}
+// checkPtb is now a no-op — PTB comes from server or timer only
+function checkPtb(){}
 
 // RSI calculation
 function calcRsi(prices,period){
@@ -478,12 +490,15 @@ function updateUI(){
     // Status
     if(locked&&prediction){
         document.getElementById('status').textContent='🔒 Prediction locked: '+(prediction.willBeat?'YES ↑':'NO ↓')+' | '+prediction.strategy;
+    }else if(!ptb){
+        const end=getHourEnd();
+        const tl=end-new Date();
+        const mins=Math.floor(tl/60000);
+        document.getElementById('status').textContent='⏳ Waiting for PTB — will capture at next hour mark ('+mins+'m)';
     }else if(ptb&&priceHistory.length<6){
         document.getElementById('status').textContent='Collecting price data... ('+priceHistory.length+'/6 ticks)';
     }else if(ptb){
         document.getElementById('status').textContent='Analyzing... prediction coming soon';
-    }else{
-        document.getElementById('status').textContent='Connecting to price feed...';
     }
 
     checkPtb();
