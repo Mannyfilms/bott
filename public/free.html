@@ -41,7 +41,8 @@
         .status{font-size:.82em;color:var(--tx2);padding:10px 0;text-align:center}
         .countdown{font-family:'JetBrains Mono',monospace;font-size:1.5em;font-weight:700;color:var(--btc);text-align:center;margin:12px 0}
         .sig{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;margin:3px 0;background:var(--sf2);border-radius:6px;font-size:.75em;border-left:3px solid var(--bd)}
-        .sig-u{border-left-color:var(--up)}.sig-d{border-left-color:var(--dn)}
+        .sig-u{border-left-color:var(--up)}.sig-d{border-left-color:var(--dn)}.sig-n{border-left-color:var(--tx3)}
+        .lock-info{font-size:.72em;color:var(--tx3);text-align:center;margin-top:10px;padding:8px;background:var(--sf2);border-radius:8px}
         .upgrade{background:linear-gradient(135deg,rgba(247,147,26,.06),rgba(247,147,26,.02));border:1.5px solid rgba(247,147,26,.15);border-radius:var(--rs);padding:20px;text-align:center;margin-top:14px}
         .upgrade h3{color:var(--btc);font-size:.95em;margin-bottom:4px}
         .upgrade p{font-size:.78em;color:var(--tx3);margin-bottom:12px}
@@ -49,6 +50,9 @@
         .echip .cl{font-size:.6em;color:var(--tx3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
         .echip .cv{font-family:'JetBrains Mono',monospace;font-size:.88em;font-weight:600}
         .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+        .wait-bar-wrap{margin-top:10px}
+        .wait-bar-track{height:4px;background:var(--sf2);border-radius:2px;overflow:hidden}
+        .wait-bar-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,#636bff,#818cf8);transition:width 1s linear}
         @media(max-width:500px){.shell{padding:12px}.pbig{font-size:1.4em}.val{font-size:1.8em}}
     </style>
 </head>
@@ -84,11 +88,16 @@
             <div class="conf" id="predConf">Waiting for data...</div>
         </div>
         <div><div class="cflbl"><span>Confidence</span><span id="confPct">0%</span></div><div class="cftrack"><div class="cffill" id="confBar" style="width:0%"></div></div></div>
+        <div class="wait-bar-wrap" id="waitBarWrap" style="display:none">
+            <div style="display:flex;justify-content:space-between;font-size:.65em;color:var(--tx3);margin-bottom:3px"><span>Gathering signals...</span><span id="waitBarPct">0%</span></div>
+            <div class="wait-bar-track"><div class="wait-bar-fill" id="waitBar" style="width:0%"></div></div>
+        </div>
+        <div class="lock-info" id="lockInfo" style="display:none"></div>
         <div style="text-align:center;margin-top:14px">
-            <div class="plbl">Next prediction</div>
+            <div class="plbl">Next prediction check</div>
             <div class="countdown" id="countdown">--:--</div>
         </div>
-        <div style="margin-top:14px"><div class="ct">Signals</div><div id="signals" style="color:var(--tx3);font-size:.78em">Collecting data...</div></div>
+        <div style="margin-top:14px"><div class="ct">Signal Breakdown</div><div id="signals" style="color:var(--tx3);font-size:.78em">Collecting data...</div></div>
     </div>
 
     <div class="card">
@@ -109,440 +118,501 @@
 
 <script>
 // ═══ FREE TIER: 1-HOUR BTC PREDICTION ═══
+// Prediction is made using REAL TECHNICAL SIGNALS (RSI, EMA, MACD, momentum, etc.)
+// NOT "how long was price above PTB" — that's a tautology.
+// Locked prediction is compared to actual price at hour end: did it beat the PTB?
+
 let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
+let displayPrice=null,latestBtcPrice=null,latestChainlinkPrice=null;
+let btcWs=null,polyWs=null;
+let priceHistory=[]; // {price, time, open, high, low, close, volume}
+let sentimentData={fearGreed:50,funding:0,sentiment:'NEUTRAL'};
+let ptbHour=-1;
+
+// ═══ INDICATORS (same as pro version) ═══
+function sma(d,p){if(d.length<p)return null;return d.slice(-p).reduce((a,b)=>a+b,0)/p}
+function ema(d,p){if(d.length<p)return null;const k=2/(p+1);let e=sma(d.slice(0,p),p);for(let i=p;i<d.length;i++)e=d[i]*k+e*(1-k);return e}
+function rsi(d,p=14){if(d.length<p+1)return null;const c=[];for(let i=1;i<d.length;i++)c.push(d[i]-d[i-1]);const r=c.slice(-p),g=r.filter(x=>x>0),l=r.filter(x=>x<0).map(Math.abs);const ag=g.length?g.reduce((a,b)=>a+b,0)/p:0,al=l.length?l.reduce((a,b)=>a+b,0)/p:0;if(!al)return 100;return 100-100/(1+ag/al)}
+function macd(d){if(d.length<26)return null;const m=ema(d,12)-ema(d,26);return{value:m,bullish:m>0}}
+function bb(d,p=20){if(d.length<p)return null;const s=sma(d,p),sl=d.slice(-p),v=sl.reduce((a,x)=>a+Math.pow(x-s,2),0)/p,st=Math.sqrt(v);return{upper:s+st*2,lower:s-st*2,mid:s}}
+function atr(d,p=14){if(d.length<p+1)return null;const r=[];for(let i=1;i<Math.min(d.length,p+1);i++)r.push(Math.abs(d[d.length-i]-d[d.length-i-1]));return r.reduce((a,b)=>a+b,0)/r.length}
+
+function emaCrossover(prices){
+  if(prices.length<25)return null;
+  const e9=ema(prices,9),e21=ema(prices,21);
+  const e9p=ema(prices.slice(0,-1),9),e21p=ema(prices.slice(0,-1),21);
+  if(!e9||!e21||!e9p||!e21p)return null;
+  return{crossUp:e9p<=e21p&&e9>e21,crossDown:e9p>=e21p&&e9<e21,bullish:e9>e21,e9,e21}
+}
+
+function stochRsi(prices,rp=14,sp=14){
+  if(prices.length<rp+sp)return null;
+  const rs=[];
+  for(let i=rp;i<=prices.length;i++){
+    const sl=prices.slice(i-rp-1,i);let g=0,l=0;
+    for(let j=1;j<sl.length;j++){const d=sl[j]-sl[j-1];if(d>0)g+=d;else l-=d}
+    rs.push(100-(100/(1+g/Math.max(l,0.001))));
+  }
+  if(rs.length<sp)return null;
+  const rec=rs.slice(-sp),mn=Math.min(...rec),mx=Math.max(...rec);
+  if(mx===mn)return{k:50,signal:'NEUTRAL'};
+  const k=(rs[rs.length-1]-mn)/(mx-mn)*100;
+  return{k,signal:k>80?'OVERBOUGHT':k<20?'OVERSOLD':k>50?'BULLISH':'BEARISH'}
+}
+
+function priceVelocity(prices){
+  if(prices.length<10)return null;
+  const v1=(prices[prices.length-1]-prices[prices.length-4])/3;
+  const v2=(prices[prices.length-5]-prices[prices.length-8])/3;
+  const acc=v1-v2;
+  return{velocity:v1,acceleration:acc,
+    signal:v1>0&&acc>0?'ACCELERATING UP':v1<0&&acc<0?'ACCELERATING DOWN':
+           v1>0&&acc<0?'DECELERATING UP':v1<0&&acc>0?'DECELERATING DOWN':'NEUTRAL'}
+}
+
+// ═══ MAIN PREDICTION ENGINE ═══
+// Uses real technical signals — NOT position tracking (which is a tautology)
+function makeTechnicalPrediction(prices){
+  if(prices.length<15)return null;
+
+  let bullScore=0,bearScore=0;
+  const signals=[];
+
+  // 1. Price momentum / velocity
+  const vel=priceVelocity(prices);
+  if(vel){
+    if(vel.signal==='ACCELERATING UP'){bullScore+=3;signals.push({name:'Momentum: Accel UP ↑↑',up:true,strength:3})}
+    else if(vel.signal==='DECELERATING UP'){bullScore+=1;signals.push({name:'Momentum: Decelerating UP',up:true,strength:1})}
+    else if(vel.signal==='ACCELERATING DOWN'){bearScore+=3;signals.push({name:'Momentum: Accel DOWN ↓↓',up:false,strength:3})}
+    else if(vel.signal==='DECELERATING DOWN'){bearScore+=1;signals.push({name:'Momentum: Decelerating DOWN',up:false,strength:1})}
+    else signals.push({name:'Momentum: Neutral',up:null,strength:0});
+  }
+
+  // 2. RSI
+  const rs=rsi(prices);
+  if(rs!==null){
+    if(rs<30){bullScore+=2.5;signals.push({name:'RSI: Oversold ('+rs.toFixed(0)+')',up:true,strength:2.5})}
+    else if(rs>70){bearScore+=2.5;signals.push({name:'RSI: Overbought ('+rs.toFixed(0)+')',up:false,strength:2.5})}
+    else if(rs<45){bullScore+=1;signals.push({name:'RSI: Low — bullish lean ('+rs.toFixed(0)+')',up:true,strength:1})}
+    else if(rs>55){bearScore+=1;signals.push({name:'RSI: High — bearish lean ('+rs.toFixed(0)+')',up:false,strength:1})}
+    else signals.push({name:'RSI: Neutral ('+rs.toFixed(0)+')',up:null,strength:0});
+  }
+
+  // 3. EMA 9/21 crossover + trend
+  const ec=emaCrossover(prices);
+  if(ec){
+    if(ec.crossUp){bullScore+=3;signals.push({name:'EMA: Bullish crossover ↑',up:true,strength:3})}
+    else if(ec.crossDown){bearScore+=3;signals.push({name:'EMA: Bearish crossover ↓',up:false,strength:3})}
+    else if(ec.bullish){bullScore+=1.5;signals.push({name:'EMA: Price above EMA21 ↑',up:true,strength:1.5})}
+    else{bearScore+=1.5;signals.push({name:'EMA: Price below EMA21 ↓',up:false,strength:1.5})}
+  }
+
+  // 4. MACD
+  const mc=macd(prices);
+  if(mc){
+    if(mc.bullish){bullScore+=1.5;signals.push({name:'MACD: Bullish',up:true,strength:1.5})}
+    else{bearScore+=1.5;signals.push({name:'MACD: Bearish',up:false,strength:1.5})}
+  }
+
+  // 5. Bollinger Bands position
+  const b=bb(prices);
+  if(b){
+    const cur=prices[prices.length-1];
+    const pos=(cur-b.lower)/(b.upper-b.lower);
+    if(pos<0.15){bullScore+=2;signals.push({name:'Bollinger: Near lower band ('+Math.round(pos*100)+'%)',up:true,strength:2})}
+    else if(pos>0.85){bearScore+=2;signals.push({name:'Bollinger: Near upper band ('+Math.round(pos*100)+'%)',up:false,strength:2})}
+    else signals.push({name:'Bollinger: Mid-band position ('+Math.round(pos*100)+'%)',up:null,strength:0});
+  }
+
+  // 6. Stoch RSI
+  const sr=stochRsi(prices);
+  if(sr){
+    if(sr.signal==='OVERSOLD'){bullScore+=2;signals.push({name:'StochRSI: Oversold ('+sr.k.toFixed(0)+')',up:true,strength:2})}
+    else if(sr.signal==='OVERBOUGHT'){bearScore+=2;signals.push({name:'StochRSI: Overbought ('+sr.k.toFixed(0)+')',up:false,strength:2})}
+    else signals.push({name:'StochRSI: '+sr.signal+' ('+sr.k.toFixed(0)+')',up:sr.signal==='BULLISH',strength:0.5});
+  }
+
+  // 7. Fear & Greed (contrarian for extremes)
+  const fg=sentimentData.fearGreed;
+  if(fg<25){bullScore+=1.5;signals.push({name:'Fear & Greed: Extreme Fear → buy ('+fg+')',up:true,strength:1.5})}
+  else if(fg>80){bearScore+=1.5;signals.push({name:'Fear & Greed: Extreme Greed → sell ('+fg+')',up:false,strength:1.5})}
+  else signals.push({name:'Fear & Greed: Neutral ('+fg+')',up:null,strength:0});
+
+  // 8. Funding rate (negative = bearish sentiment → contrarian bullish)
+  const fr=sentimentData.funding;
+  if(fr>0.02){bearScore+=1;signals.push({name:'Funding: High positive — overleveraged ('+fr.toFixed(4)+'%)',up:false,strength:1})}
+  else if(fr<-0.005){bullScore+=1;signals.push({name:'Funding: Negative — shorts dominate ('+fr.toFixed(4)+'%)',up:true,strength:1})}
+  else signals.push({name:'Funding: Normal ('+fr.toFixed(4)+'%)',up:null,strength:0});
+
+  // 9. Price vs PTB as a mild directional signal (weighted LOW — not the main driver)
+  if(ptb){
+    const cur=prices[prices.length-1];
+    const diff=cur-ptb;
+    const gap=Math.abs(diff);
+    // Only use as a signal if gap is significant (>$100)
+    // — avoids the tautology while still noting extreme displacements
+    if(gap>200){
+      if(diff>0){bullScore+=0.5;signals.push({name:'vs PTB: $'+gap.toFixed(0)+' above (mild bull)',up:true,strength:0.5})}
+      else{bearScore+=0.5;signals.push({name:'vs PTB: $'+gap.toFixed(0)+' below (mild bear)',up:false,strength:0.5})}
+    } else {
+      signals.push({name:'vs PTB: $'+(diff>0?'+':'')+diff.toFixed(0)+' (too close to use as signal)',up:null,strength:0});
+    }
+  }
+
+  const total=bullScore+bearScore||1;
+  const bullPct=bullScore/total;
+  const prediction=bullPct>0.5;
+  const margin=Math.abs(bullPct-0.5)*2; // 0=tie, 1=unanimous
+  // Honest confidence: 50–88% range (not inflated)
+  const confidence=Math.round(Math.max(50,Math.min(88,52+margin*36)));
+
+  return{prediction,confidence,bullScore,bearScore,signals,margin};
+}
+
+// ═══ DYNAMIC LOCK TIMING (scaled to 1 hour) ═══
+// Same logic as pro version but scaled: 5min→60min (×12)
+// Price far from PTB ($150+) → lock after 2 min
+// Price close to PTB (<$30)  → wait up to 15 min (max)
+// Strong signal consensus can shave time off the wait
+function getLockAfterMins(priceDiff, signalMargin){
+  const MIN_WAIT_MINS = 2;   // never lock before 2 min into the hour
+  const MAX_WAIT_MINS = 15;  // never wait more than 15 min
+  const CLOSE_THRESHOLD = 30;
+  const CLEAR_THRESHOLD = 150;
+
+  let lockAfter;
+  if(priceDiff >= CLEAR_THRESHOLD){
+    lockAfter = MIN_WAIT_MINS;
+  } else if(priceDiff <= CLOSE_THRESHOLD){
+    lockAfter = MAX_WAIT_MINS;
+  } else {
+    const t=(priceDiff-CLOSE_THRESHOLD)/(CLEAR_THRESHOLD-CLOSE_THRESHOLD);
+    lockAfter=MAX_WAIT_MINS - t*(MAX_WAIT_MINS-MIN_WAIT_MINS);
+  }
+  // Strong signals → can lock up to 3 min sooner
+  if(signalMargin>0.5){
+    lockAfter=Math.max(MIN_WAIT_MINS, lockAfter - signalMargin*3);
+  }
+  return lockAfter;
+}
 
 // ═══ PRICE FEEDS ═══
-// Display: crypto_prices (Binance via Polymarket RTDS) — matches Polymarket UI
-// PTB: Binance 1H candle open via REST API — exact settlement source
-let btcWs=null,latestBtcPrice=null;
-let polyWs=null,latestChainlinkPrice=null;
-let displayPrice=null;
-
 function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
     polyWs.onopen=function(){
-      polyWs.send(JSON.stringify({
-        action:'subscribe',
-        subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
-      }));
-      polyWs.send(JSON.stringify({
-        action:'subscribe',
-        subscriptions:[{topic:'crypto_prices',type:'update'}]
-      }));
-      console.log('Connected to Polymarket RTDS');
+      polyWs.send(JSON.stringify({action:'subscribe',subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]}));
+      polyWs.send(JSON.stringify({action:'subscribe',subscriptions:[{topic:'crypto_prices',type:'update'}]}));
     };
     polyWs.onmessage=function(e){
       try{
         const d=JSON.parse(e.data);
         if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
-          latestChainlinkPrice=d.payload.value;
-          latestBtcPrice=d.payload.value;
-          btcPrice=d.payload.value;
-          if(!displayPrice){displayPrice=d.payload.value;updateUI();}
+          latestChainlinkPrice=d.payload.value;latestBtcPrice=d.payload.value;btcPrice=d.payload.value;
+          if(!displayPrice){displayPrice=d.payload.value}
+          recordPrice(d.payload.value);updateUI();
         }
         if(d.topic==='crypto_prices'&&d.payload){
           const sym=(d.payload.symbol||'').toLowerCase();
           if(sym==='btcusdt'){
             displayPrice=d.payload.value;
-            if(!latestChainlinkPrice){latestBtcPrice=d.payload.value;btcPrice=d.payload.value;}
+            if(!latestChainlinkPrice){latestBtcPrice=d.payload.value;btcPrice=d.payload.value;recordPrice(d.payload.value)}
             updateUI();
           }
         }
       }catch(ex){}
     };
-    let pingInterval=setInterval(()=>{
-      if(polyWs.readyState===1)polyWs.send('PING');
-      else{clearInterval(pingInterval)}
-    },5000);
-    polyWs.onclose=function(){clearInterval(pingInterval);setTimeout(connectPolyWs,3000)};
+    let ping=setInterval(()=>{if(polyWs.readyState===1)polyWs.send('PING');else clearInterval(ping)},5000);
+    polyWs.onclose=function(){clearInterval(ping);setTimeout(connectPolyWs,3000)};
     polyWs.onerror=function(){polyWs.close()};
   }catch(e){setTimeout(connectPolyWs,5000)}
 }
+function connectBtcWs(){
+  try{
+    btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+    btcWs.onmessage=function(e){
+      const d=JSON.parse(e.data);const p=parseFloat(d.p);
+      if(!latestChainlinkPrice){btcPrice=p;latestBtcPrice=p;recordPrice(p)}
+      if(!displayPrice){displayPrice=p;updateUI()}
+    };
+    btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};
+    btcWs.onerror=function(){btcWs.close()};
+  }catch(e){setTimeout(connectBtcWs,5000)}
+}
+connectPolyWs();connectBtcWs();
 
-// BACKUP: Direct Binance WebSocket
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);const p=parseFloat(d.p);if(!displayPrice){displayPrice=p;if(!btcPrice)btcPrice=p;updateUI()}};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
-connectPolyWs();
-connectBtcWs();
+// Record price into history (sample ~every 5s, keep 500 points = ~40min of 5s ticks)
+let lastRecordTime=0;
+function recordPrice(p){
+  const now=Date.now();
+  if(now-lastRecordTime<4000)return; // throttle to ~5s
+  lastRecordTime=now;
+  priceHistory.push(p);
+  if(priceHistory.length>500)priceHistory.shift();
+}
 
-// If crypto_prices never arrives after 5 seconds, use Chainlink for display
-setTimeout(()=>{
-  if(!displayPrice&&latestChainlinkPrice){
-    console.log('⚠️ crypto_prices not arriving, using Chainlink for display');
-    setInterval(()=>{
-      if(latestChainlinkPrice){displayPrice=latestChainlinkPrice;updateUI();}
-    },1000);
-  }
-},5000);
-
-// ═══ PTB: Binance 1H candle open — exact Polymarket hourly settlement source ═══
-let ptbHour=-1;
-
-// Fetch exact Binance 1H candle open price
+// ═══ PTB MANAGEMENT ═══
 async function fetchBinanceHourlyOpen(){
-    try{
-        const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
-        const d=await r.json();
-        if(d&&d[0]){
-            const openPrice=parseFloat(d[0][1]); // [1] = open price
-            console.log('📊 Binance 1H candle open: $'+openPrice.toFixed(2));
-            return openPrice;
-        }
-    }catch(e){console.log('⚠️ Binance API fetch failed:',e)}
-    return null;
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
+    const d=await r.json();
+    if(d&&d[0])return parseFloat(d[0][1]); // open price
+  }catch(e){}
+  return null;
 }
 
-// Save PTB to server + localStorage
 function savePtb(price){
-    const hour=new Date().getUTCHours();
-    localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now()}));
-    fetch('/api/ptb-hourly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,hour})}).catch(()=>{});
+  const hour=new Date().getUTCHours();
+  localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now()}));
+  fetch('/api/ptb-hourly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,hour})}).catch(()=>{});
 }
 
-// Load PTB — try Binance API first (exact), then server, then localStorage
 async function loadPtb(){
-    const currentHour=new Date().getUTCHours();
-    const minutesIn=new Date().getMinutes();
-    
-    // If we're past minute 0, fetch the current 1H candle open from Binance (the definitive PTB)
-    if(minutesIn>=1){
-        const binanceOpen=await fetchBinanceHourlyOpen();
-        if(binanceOpen&&binanceOpen>30000&&binanceOpen<200000){
-            ptb=binanceOpen;
-            ptbSetAt=new Date();
-            ptbSetAt.setMinutes(0,0,0);
-            ptbHour=currentHour;
-            savePtb(binanceOpen);
-            console.log('📌 PTB from Binance 1H candle open: $'+binanceOpen.toFixed(2));
-            return;
-        }
-    }
-    
-    // Try server
-    try{
-        const r=await fetch('/api/ptb-hourly');
-        const d=await r.json();
-        if(d.price&&d.hour===currentHour&&d.price>30000&&d.price<200000){
-            ptb=d.price;
-            ptbSetAt=new Date();
-            ptbSetAt.setMinutes(0,0,0);
-            ptbHour=currentHour;
-            console.log('📌 PTB from server: $'+d.price.toFixed(2));
-            return;
-        }
-    }catch(e){}
-    
-    // Try localStorage
-    try{
-        const d=JSON.parse(localStorage.getItem('ptb_hourly'));
-        if(d&&d.hour===currentHour&&d.price>30000&&d.price<200000&&(Date.now()-d.ts)<3600000){
-            ptb=d.price;
-            ptbSetAt=new Date();
-            ptbSetAt.setMinutes(0,0,0);
-            ptbHour=currentHour;
-            console.log('📌 PTB from cache: $'+d.price.toFixed(2));
-            return;
-        }
-    }catch(e){}
-    
-    console.log('⏳ No PTB available yet — waiting for next hour boundary');
+  const currentHour=new Date().getUTCHours();
+  const minutesIn=new Date().getMinutes();
+  if(minutesIn>=1){
+    const open=await fetchBinanceHourlyOpen();
+    if(open&&open>30000&&open<200000){ptb=open;ptbSetAt=new Date();ptbSetAt.setMinutes(0,0,0);ptbHour=currentHour;savePtb(open);return}
+  }
+  try{
+    const r=await fetch('/api/ptb-hourly');const d=await r.json();
+    if(d.price&&d.hour===currentHour&&d.price>30000&&d.price<200000){ptb=d.price;ptbSetAt=new Date();ptbSetAt.setMinutes(0,0,0);ptbHour=currentHour;return}
+  }catch(e){}
+  try{
+    const d=JSON.parse(localStorage.getItem('ptb_hourly'));
+    if(d&&d.hour===currentHour&&d.price>30000&&d.price<200000&&(Date.now()-d.ts)<3600000){ptb=d.price;ptbSetAt=new Date();ptbSetAt.setMinutes(0,0,0);ptbHour=currentHour}
+  }catch(e){}
 }
 loadPtb();
 
-// Timer at exact hour boundary — then confirm with Binance REST API 5s later
 function startPtbTimer(){
-    const now=Date.now();
-    const hourMs=3600000;
-    const nextBoundary=Math.ceil(now/hourMs)*hourMs;
-    const delay=nextBoundary-now;
-    
-    console.log('⏱️ Next PTB capture in '+(delay/1000/60).toFixed(1)+' minutes');
-    
-    async function captureHourlyPtb(){
-        locked=false;
-        prediction=null;
-        ptbHour=new Date().getUTCHours();
-        ptbSetAt=new Date();
-        
-        // Wait 5 seconds for Binance candle to finalize, then fetch exact open
-        setTimeout(async()=>{
-            const binanceOpen=await fetchBinanceHourlyOpen();
-            if(binanceOpen){
-                ptb=binanceOpen;
-                savePtb(binanceOpen);
-                console.log('🎯 HOURLY PTB SET (Binance candle open): $'+binanceOpen.toFixed(2)+' at '+new Date().toLocaleTimeString());
-                updateUI();
-            }
-        },5000);
+  const now=Date.now(),hourMs=3600000;
+  const delay=Math.ceil(now/hourMs)*hourMs-now;
+  setTimeout(async()=>{
+    async function captureHourly(){
+      locked=false;prediction=null;ptbHour=new Date().getUTCHours();ptbSetAt=new Date();
+      priceHistory=[]; // reset price history for new hour's prediction
+      document.getElementById('predDisplay').className='pred pred-nu';
+      document.getElementById('predValue').textContent='--';
+      document.getElementById('predConf').textContent='New hour — gathering signals...';
+      document.getElementById('signals').innerHTML='<span style="color:var(--tx3)">Collecting data...</span>';
+      setTimeout(async()=>{
+        const open=await fetchBinanceHourlyOpen();
+        if(open){ptb=open;savePtb(open);updateUI()}
+      },5000);
     }
-    
-    setTimeout(()=>{
-        captureHourlyPtb();
-        setInterval(captureHourlyPtb,hourMs);
-    },delay);
+    captureHourly();setInterval(captureHourly,hourMs);
+  },delay);
 }
 startPtbTimer();
 
-// Retry loading PTB from server every 10s if we don't have one (someone else might save it)
+// Retry PTB from server
 function retryPtbFromServer(){
-    if(ptb)return; // Already have one
-    const interval=setInterval(async()=>{
-        if(ptb){clearInterval(interval);return;}
-        try{
-            const currentHour=new Date().getUTCHours();
-            const r=await fetch('/api/ptb-hourly');
-            const d=await r.json();
-            if(d.price&&d.hour===currentHour){
-                ptb=d.price;
-                ptbSetAt=new Date();
-                ptbSetAt.setMinutes(0,0,0);
-                ptbHour=currentHour;
-                console.log('📌 PTB from server (retry): $'+d.price.toFixed(2));
-                clearInterval(interval);
-            }
-        }catch(e){}
-    },10000);
-    // Stop retrying after 5 minutes
-    setTimeout(()=>clearInterval(interval),300000);
+  if(ptb)return;
+  const iv=setInterval(async()=>{
+    if(ptb){clearInterval(iv);return}
+    try{
+      const r=await fetch('/api/ptb-hourly');const d=await r.json();
+      const h=new Date().getUTCHours();
+      if(d.price&&d.hour===h){ptb=d.price;ptbSetAt=new Date();ptbSetAt.setMinutes(0,0,0);ptbHour=h;clearInterval(iv)}
+    }catch(e){}
+  },10000);
+  setTimeout(()=>clearInterval(iv),300000);
 }
 retryPtbFromServer();
 
 function getHourEnd(){
-    const now=new Date();
-    const next=new Date(now);
-    next.setMinutes(0,0,0);
-    next.setHours(next.getHours()+1);
-    return next;
+  const now=new Date(),next=new Date(now);
+  next.setMinutes(0,0,0);next.setHours(next.getHours()+1);return next;
 }
 
-function getHourStart(){
-    const now=new Date();
-    const start=new Date(now);
-    start.setMinutes(0,0,0);
-    return start;
-}
-
-// checkPtb is now a no-op — PTB comes from server or timer only
-function checkPtb(){}
-
-// ═══ POSITION TRACKER — tracks time above/below PTB ═══
-let positionHistory=[]; // {above: bool, diff: number, time: timestamp}
-
-function trackPosition(){
-    if(!btcPrice||!ptb)return;
-    const showPrice=displayPrice||btcPrice;
-    positionHistory.push({above:showPrice>=ptb,diff:showPrice-ptb,time:Date.now()});
-    // Keep last 720 samples (~1 hour at 5s intervals)
-    if(positionHistory.length>720)positionHistory.shift();
-}
-
-function getPositionStats(){
-    if(positionHistory.length<2)return{abovePct:0.5,avgDiff:0,trend:0,samples:0};
-    const aboveCount=positionHistory.filter(p=>p.above).length;
-    const abovePct=aboveCount/positionHistory.length;
-    const avgDiff=positionHistory.reduce((s,p)=>s+p.diff,0)/positionHistory.length;
-    // Trend: recent vs older half
-    const mid=Math.floor(positionHistory.length/2);
-    const recentHalf=positionHistory.slice(mid);
-    const olderHalf=positionHistory.slice(0,mid);
-    const recentAvg=recentHalf.reduce((s,p)=>s+p.diff,0)/recentHalf.length;
-    const olderAvg=olderHalf.reduce((s,p)=>s+p.diff,0)/olderHalf.length;
-    const trend=recentAvg-olderAvg;
-    return{abovePct,avgDiff,trend,samples:positionHistory.length};
-}
-
-// Track position every 5 seconds
-setInterval(trackPosition,5000);
-
-// Price history for display
-let priceHistory=[];
-let sentimentData={fearGreed:null,sentiment:null,funding:null};
-
-// Fetch sentiment
+// ═══ SENTIMENT ═══
 async function fetchSentiment(){
-    try{
-        const r=await fetch('https://api.alternative.me/fng/');
-        const d=await r.json();
-        if(d.data&&d.data[0]){
-            sentimentData.fearGreed=d.data[0].value+' ('+d.data[0].value_classification+')';
-            document.getElementById('fearGreed').textContent=sentimentData.fearGreed;
-        }
-    }catch(e){}
-    try{
-        const r=await fetch('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1');
-        const d=await r.json();
-        if(d[0]){
-            const rate=(parseFloat(d[0].fundingRate)*100).toFixed(4)+'%';
-            sentimentData.funding=rate;
-            document.getElementById('funding').textContent=rate;
-        }
-    }catch(e){}
-    try{
-        const r=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT');
-        const d=await r.json();
-        const change=parseFloat(d.priceChangePercent);
-        sentimentData.sentiment=change>1?'Bullish':change<-1?'Bearish':'Neutral';
-        document.getElementById('sentiment').textContent=sentimentData.sentiment;
-        document.getElementById('sentiment').style.color=change>1?'var(--up)':change<-1?'var(--dn)':'var(--tx2)';
-    }catch(e){}
+  try{
+    const r=await fetch('https://api.alternative.me/fng/');const d=await r.json();
+    if(d.data&&d.data[0]){
+      sentimentData.fearGreed=parseInt(d.data[0].value);
+      document.getElementById('fearGreed').textContent=d.data[0].value+' ('+d.data[0].value_classification+')';
+    }
+  }catch(e){}
+  try{
+    const r=await fetch('https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1');const d=await r.json();
+    if(d[0]){
+      sentimentData.funding=parseFloat(d[0].fundingRate)*100;
+      document.getElementById('funding').textContent=sentimentData.funding.toFixed(4)+'%';
+    }
+  }catch(e){}
+  try{
+    const r=await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT');const d=await r.json();
+    const change=parseFloat(d.priceChangePercent);
+    sentimentData.sentiment=change>1?'Bullish':change<-1?'Bearish':'Neutral';
+    document.getElementById('sentiment').textContent=sentimentData.sentiment;
+    document.getElementById('sentiment').style.color=change>1?'var(--up)':change<-1?'var(--dn)':'var(--tx2)';
+  }catch(e){}
 }
 
-// ═══ PREDICTION — same strategy as 5-min but scaled for 1 hour ═══
-// Tracks time above/below PTB, locks based on gap size
-// Gap-based lock timing: big gap = fast lock, small gap = wait longer
-// Max 15 minutes to lock (scaled from 5-min's 2 minutes: 2min/5min = 15min/60min)
-function makePrediction(){
-    if(!btcPrice||!ptb||locked)return;
-    const now=new Date();
-    const showPrice=displayPrice||btcPrice;
-    const diff=showPrice-ptb;
-    const gap=Math.abs(diff);
-    const aboveNow=diff>0;
-    const minutesIn=now.getMinutes();
-    const minutesLeft=60-minutesIn;
+// ═══ MAIN UPDATE / PREDICTION LOOP ═══
+function updateUI(){
+  const showPrice=displayPrice||btcPrice;
+  if(!showPrice)return;
 
-    // Need at least 30 seconds of tracking (6 samples)
-    const pos=getPositionStats();
-    if(pos.samples<6){
-        document.getElementById('status').textContent='Collecting data... ('+pos.samples+'/6 samples)';
-        return;
-    }
+  document.getElementById('currentPrice').textContent='$'+showPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 
-    // ═══ GAP-BASED LOCK TIMING ═══
-    // $200+ gap → 2 min, $100 → 5 min, $50 → 8 min, $10 → 15 min
-    const lockAfterMins=Math.max(2,Math.min(15, 15-Math.min(gap,200)*0.065));
-    const shouldLock=minutesIn>=lockAfterMins;
+  if(ptb){
+    document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    document.getElementById('ptbTime').textContent=ptbSetAt?'Set '+ptbSetAt.toLocaleTimeString():'Set at hour mark';
+    const diff=showPrice-ptb,pct=(diff/ptb*100).toFixed(3);
+    document.getElementById('vsComparison').innerHTML=diff>0?
+      '<span style="color:var(--up)">+$'+diff.toFixed(2)+' (+'+pct+'%)</span>':
+      '<span style="color:var(--dn)">$'+diff.toFixed(2)+' ('+pct+'%)</span>';
+  }
 
-    // The prediction: above PTB for most of the time → YES
-    const pred=pos.abovePct>0.5;
-    const dominance=Math.abs(pos.abovePct-0.5)*2; // 0=50/50, 1=100% one side
+  // Countdown
+  const end=getHourEnd(),tl=end-new Date();
+  const mins=Math.floor(tl/60000),secs=Math.floor((tl%60000)/1000);
+  document.getElementById('countdown').textContent=mins+'m '+secs+'s';
 
-    // Build signals
-    const signals=[];
-    signals.push({name:'Price vs PTB: '+(aboveNow?'+':'-')+'$'+gap.toFixed(0)+' ('+minutesLeft+'m left)',up:aboveNow});
-    signals.push({name:'Time Above PTB: '+Math.round(pos.abovePct*100)+'% ('+pos.samples+' samples)',up:pos.abovePct>0.5});
-    signals.push({name:'Avg Distance: '+(pos.avgDiff>0?'+':'')+pos.avgDiff.toFixed(2),up:pos.avgDiff>0});
-    signals.push({name:'Trend: '+(pos.trend>0?'Moving UP':'Moving DOWN'),up:pos.trend>0});
-
-    if(!shouldLock){
-        // Still watching — show lean
-        const minsToLock=Math.ceil(lockAfterMins-minutesIn);
-        document.getElementById('status').textContent='⏳ Watching... locks in ~'+minsToLock+'m (gap $'+gap.toFixed(0)+')';
-        document.getElementById('predDisplay').className='pred pred-nu';
-        document.getElementById('predValue').innerHTML=
-            '<div style="font-size:.9em;color:var(--tx2)">⏳ Watching...</div>'+
-            '<div style="font-size:.45em;margin-top:6px;color:var(--tx3)">'+(aboveNow?'↑ +$':'↓ -$')+gap.toFixed(0)+' · Above '+Math.round(pos.abovePct*100)+'% of time</div>';
-        document.getElementById('predConf').textContent='Leaning: '+(pred?'YES ↑':'NO ↓')+' · Locks in ~'+minsToLock+'m';
-        document.getElementById('confPct').textContent='--';
-        document.getElementById('confBar').style.width='0%';
-
-        signals.push({name:'Lock in ~'+minsToLock+'m (gap $'+gap.toFixed(0)+')',up:pred});
-        document.getElementById('signals').innerHTML=signals.map(s=>
-            '<div class="sig '+(s.up?'sig-u':'sig-d')+'"><span>'+s.name+'</span><span style="color:'+(s.up?'var(--up)':'var(--dn)')+'">'+
-            (s.up?'▲':'▼')+'</span></div>').join('');
-        return;
-    }
-
-    // ═══ LOCK IT ═══
-    locked=true;
-
-    // Confidence: gap size + dominance
-    const gapConf=Math.min(gap/100*10,10);
-    const timeConf=dominance*10;
-    const conf=Math.max(85,Math.min(98,Math.round(85+gapConf+timeConf)));
-
-    const strategy='ABOVE '+Math.round(pos.abovePct*100)+'%';
-    prediction={willBeat:pred,confidence:conf,strategy:strategy};
-
-    signals.push({name:'→ '+(pred?'YES ↑':'NO ↓')+' ('+strategy+')',up:pred});
-
-    document.getElementById('signals').innerHTML=signals.map(s=>
-        '<div class="sig '+(s.up?'sig-u':'sig-d')+'"><span>'+s.name+'</span><span style="color:'+(s.up?'var(--up)':'var(--dn)')+'">'+
-        (s.up?'▲':'▼')+'</span></div>').join('');
-
+  if(locked){
+    // Already locked — just keep showing the prediction
     updatePredDisplay();
-    console.log('🔒 LOCKED at '+minutesIn+'m (gap $'+gap.toFixed(0)+' → lockAfter '+lockAfterMins.toFixed(0)+'m): '+(pred?'YES ↑':'NO ↓')+' | Above '+Math.round(pos.abovePct*100)+'%');
+    document.getElementById('status').textContent='🔒 Prediction locked — checking at '+end.toLocaleTimeString();
+    return;
+  }
+
+  if(!ptb){
+    document.getElementById('status').textContent='⏳ Waiting for PTB at next hour mark ('+mins+'m '+secs+'s)';
+    return;
+  }
+
+  // Need enough price history to compute indicators
+  // Require at least 26 samples (for MACD) — at 5s each that's ~2 minutes
+  if(priceHistory.length<26){
+    const needed=26-priceHistory.length;
+    const secsNeeded=needed*5;
+    document.getElementById('status').textContent='Collecting data — '+priceHistory.length+'/26 samples ('+Math.ceil(secsNeeded/60)+'m '+secsNeeded%60+'s)';
+    // Show wait bar
+    document.getElementById('waitBarWrap').style.display='block';
+    document.getElementById('lockInfo').style.display='none';
+    const pct=Math.round(priceHistory.length/26*100);
+    document.getElementById('waitBar').style.width=pct+'%';
+    document.getElementById('waitBarPct').textContent=pct+'%';
+    return;
+  }
+
+  // Run technical prediction
+  const result=makeTechnicalPrediction(priceHistory);
+  if(!result)return;
+
+  // Dynamic lock timing
+  const minutesIn=new Date().getMinutes();
+  const priceDiff=Math.abs((displayPrice||btcPrice)-ptb);
+  const lockAfterMins=getLockAfterMins(priceDiff, result.margin);
+  const shouldLock=minutesIn>=lockAfterMins;
+  const minsToLock=Math.ceil(lockAfterMins-minutesIn);
+
+  // Classify difficulty
+  const callDiff=priceDiff>=150?'CLEAR':priceDiff<=30?'TOO CLOSE':'MARGINAL';
+  const diffColor=callDiff==='CLEAR'?'var(--up)':callDiff==='TOO CLOSE'?'var(--dn)':'#eab308';
+
+  if(!shouldLock){
+    // Still watching — show lean + signals + wait bar
+    document.getElementById('status').textContent='⏳ '+callDiff+' — locking in ~'+minsToLock+'m';
+    document.getElementById('predDisplay').className='pred pred-nu';
+    const leanArrow=result.prediction?'↑':'↓';
+    document.getElementById('predValue').innerHTML=
+      '<div style="font-size:.85em;color:var(--tx2)">⏳ Analyzing...</div>'+
+      '<div style="font-size:.4em;margin-top:8px;color:var(--tx2)">Leaning '+leanArrow+' '+(result.prediction?'YES':'NO')+
+      ' · Bull '+result.bullScore.toFixed(1)+' vs Bear '+result.bearScore.toFixed(1)+'</div>';
+    document.getElementById('predConf').textContent='Not locked yet — '+callDiff+' call ($'+priceDiff.toFixed(0)+' from PTB)';
+    document.getElementById('confPct').textContent='--';
+    document.getElementById('confBar').style.width='0%';
+
+    // Wait bar
+    document.getElementById('waitBarWrap').style.display='block';
+    const waitPct=Math.min(100,Math.round(minutesIn/lockAfterMins*100));
+    document.getElementById('waitBar').style.width=waitPct+'%';
+    document.getElementById('waitBarPct').textContent=waitPct+'%';
+
+    // Lock info
+    document.getElementById('lockInfo').style.display='block';
+    document.getElementById('lockInfo').innerHTML=
+      '<span style="color:'+diffColor+'">'+callDiff+'</span> — '+
+      (callDiff==='CLEAR'?'Large gap, locking soon (~'+minsToLock+'m)':
+       callDiff==='TOO CLOSE'?'Price near PTB, watching up to 15 min for clarity':
+       'Marginal gap, locking in ~'+minsToLock+'m')+
+      ' | $'+priceDiff.toFixed(0)+' from PTB';
+  } else {
+    // Lock it in
+    locked=true;
+    prediction={willBeat:result.prediction,confidence:result.confidence,bullScore:result.bullScore,bearScore:result.bearScore};
+    document.getElementById('waitBarWrap').style.display='none';
+    document.getElementById('lockInfo').style.display='none';
+    document.getElementById('status').textContent='🔒 Prediction locked at '+minutesIn+'m ('+callDiff+', gap $'+priceDiff.toFixed(0)+')';
+    console.log('🔒 LOCKED ['+callDiff+'] at '+minutesIn+'m | gap $'+priceDiff.toFixed(0)+' | margin '+result.margin.toFixed(2)+' | → '+(result.prediction?'YES ↑':'NO ↓')+' ('+result.confidence+'%)');
+    updatePredDisplay();
+  }
+
+  // Always render signals
+  renderSignals(result.signals);
 }
 
 function updatePredDisplay(){
-    if(!prediction)return;
-    const el=document.getElementById('predDisplay');
-    el.className='pred '+(prediction.willBeat?'pred-up':'pred-dn');
-    document.getElementById('predValue').innerHTML=
-        '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES 🔒':'↓ NO 🔒')+'</div>'+
-        '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?ptb.toFixed(2):'--')+'</div>';
-    document.getElementById('predConf').textContent='Confidence: '+prediction.confidence+'%';
-    document.getElementById('confPct').textContent=prediction.confidence+'%';
-    document.getElementById('confBar').style.width=prediction.confidence+'%';
-    document.getElementById('confBar').style.background=prediction.confidence>=80?
-        'linear-gradient(90deg,var(--up),#00b86e)':'linear-gradient(90deg,#eab308,#d97706)';
+  if(!prediction)return;
+  const el=document.getElementById('predDisplay');
+  el.className='pred '+(prediction.willBeat?'pred-up':'pred-dn');
+  document.getElementById('predValue').innerHTML=
+    '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES 🔒':'↓ NO 🔒')+'</div>'+
+    '<div style="font-size:.4em;margin-top:6px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?ptb.toFixed(2):'--')+'</div>'+
+    '<div style="font-size:.38em;margin-top:4px;color:var(--tx3)">Bull '+prediction.bullScore.toFixed(1)+' vs Bear '+prediction.bearScore.toFixed(1)+'</div>';
+  document.getElementById('predConf').textContent='Confidence: '+prediction.confidence+'%';
+  document.getElementById('confPct').textContent=prediction.confidence+'%';
+  document.getElementById('confBar').style.width=prediction.confidence+'%';
+  document.getElementById('confBar').style.background=prediction.confidence>=75?
+    'linear-gradient(90deg,var(--up),#00b86e)':
+    prediction.confidence>=60?'linear-gradient(90deg,#eab308,#d97706)':
+    'linear-gradient(90deg,var(--dn),#b91c1c)';
 }
 
-function updateUI(){
-    if(!btcPrice&&!displayPrice)return;
-    const showPrice=displayPrice||btcPrice;
-    document.getElementById('currentPrice').textContent='$'+showPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-    document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
-
-    // Store price history
-    if(btcPrice){
-        priceHistory.push({price:btcPrice,time:Date.now()});
-        if(priceHistory.length>200)priceHistory.shift();
-    }
-
-    if(ptb){
-        document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        document.getElementById('ptbTime').textContent=ptbSetAt?'Set at '+ptbSetAt.toLocaleTimeString():'Set at hour mark';
-        const d=showPrice-ptb,p=(d/ptb*100).toFixed(3);
-        document.getElementById('vsComparison').innerHTML=d>0?
-            '<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':
-            '<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>';
-    }
-
-    // Countdown
-    const end=getHourEnd();
-    const tl=end-new Date();
-    const mins=Math.floor(tl/60000);
-    const secs=Math.floor((tl%60000)/1000);
-    document.getElementById('countdown').textContent=mins+'m '+secs+'s';
-
-    // Status (only if not already showing prediction status)
-    if(!locked&&!ptb){
-        const mins2=Math.floor((getHourEnd()-new Date())/60000);
-        document.getElementById('status').textContent='⏳ Waiting for PTB — will capture at next hour mark ('+mins2+'m)';
-    }
-
-    checkPtb();
-    if(!locked)makePrediction();
+function renderSignals(sigs){
+  if(!sigs||!sigs.length)return;
+  document.getElementById('signals').innerHTML=sigs.map(s=>{
+    const cls=s.up===true?'sig-u':s.up===false?'sig-d':'sig-n';
+    const arrow=s.up===true?'▲':s.up===false?'▼':'—';
+    const col=s.up===true?'var(--up)':s.up===false?'var(--dn)':'var(--tx3)';
+    const str=s.strength>0?'<span style="color:var(--tx3);font-size:.9em">'+s.strength.toFixed(1)+'</span>':'';
+    return'<div class="sig '+cls+'"><span>'+s.name+'</span><span style="display:flex;align-items:center;gap:6px">'+str+'<span style="color:'+col+'">'+arrow+'</span></span></div>';
+  }).join('');
 }
 
-// Check for new hour → reset
+// Reset at new hour
 setInterval(()=>{
-    const now=new Date();
-    if(now.getMinutes()===0&&now.getSeconds()<3){
-        locked=false;
-        prediction=null;
-        ptb=null;
-        positionHistory=[];
-        document.getElementById('predDisplay').className='pred pred-nu';
-        document.getElementById('predValue').textContent='--';
-        document.getElementById('predConf').textContent='New hour starting...';
-        document.getElementById('signals').innerHTML='<span style="color:var(--tx3)">Collecting data...</span>';
-    }
+  const now=new Date();
+  if(now.getMinutes()===0&&now.getSeconds()<5){
+    locked=false;prediction=null;ptb=null;priceHistory=[];
+    document.getElementById('predDisplay').className='pred pred-nu';
+    document.getElementById('predValue').textContent='--';
+    document.getElementById('predConf').textContent='New hour starting...';
+    document.getElementById('signals').innerHTML='<span style="color:var(--tx3)">Collecting data...</span>';
+    document.getElementById('waitBarWrap').style.display='none';
+    document.getElementById('lockInfo').style.display='none';
+  }
 },1000);
 
-// Fetch sentiment on load and every 5 min
-fetchSentiment();
-setInterval(fetchSentiment,300000);
-
-// Update countdown every second
+// Countdown tick
 setInterval(()=>{
-    const end=getHourEnd();
-    const tl=end-new Date();
-    const mins=Math.floor(tl/60000);
-    const secs=Math.floor((tl%60000)/1000);
-    document.getElementById('countdown').textContent=mins+'m '+secs+'s';
+  const end=getHourEnd(),tl=end-new Date();
+  const mins=Math.floor(tl/60000),secs=Math.floor((tl%60000)/1000);
+  document.getElementById('countdown').textContent=mins+'m '+secs+'s';
 },1000);
+
+// Main loop: update every 5s
+setInterval(()=>{
+  if(displayPrice||btcPrice)updateUI();
+},5000);
+
+// Sentiment: on load + every 5 min
+fetchSentiment();setInterval(fetchSentiment,300000);
 </script>
 </body>
 </html>
