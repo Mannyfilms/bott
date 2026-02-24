@@ -194,17 +194,18 @@ setInterval(()=>{
 let ptbHour=-1;
 
 // Save PTB to server + localStorage
-function savePtb(price){
+function savePtb(price,source){
     const hour=new Date().getUTCHours();
-    localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now()}));
+    localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now(),source:source||'display'}));
     fetch('/api/ptb-hourly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,hour})}).catch(()=>{});
 }
 
-// Load PTB — try server first (other users may have captured it), then localStorage
+// Load PTB — try server first, then localStorage
+// If loaded PTB seems to be from Chainlink (old saves), adjust by current offset
 async function loadPtb(){
     const currentHour=new Date().getUTCHours();
     
-    // Try server first (captures from ANY user who had the page open at :00)
+    // Try server first
     try{
         const r=await fetch('/api/ptb-hourly');
         const d=await r.json();
@@ -213,7 +214,9 @@ async function loadPtb(){
             ptbSetAt=new Date();
             ptbSetAt.setMinutes(0,0,0);
             ptbHour=currentHour;
-            console.log('📌 PTB from server (Chainlink): $'+d.price.toFixed(2));
+            console.log('📌 PTB from server: $'+d.price.toFixed(2));
+            // After displayPrice arrives, check if PTB needs adjusting
+            waitForDisplayAndAdjustPtb(d.price);
             return;
         }
     }catch(e){}
@@ -226,13 +229,32 @@ async function loadPtb(){
             ptbSetAt=new Date();
             ptbSetAt.setMinutes(0,0,0);
             ptbHour=currentHour;
-            console.log('📌 PTB from cache: $'+d.price.toFixed(2));
+            console.log('📌 PTB from cache: $'+d.price.toFixed(2)+(d.source?' ('+d.source+')':''));
+            if(d.source!=='display') waitForDisplayAndAdjustPtb(d.price);
             return;
         }
     }catch(e){}
     
-    // No PTB available — don't set a fake one. Show waiting state.
     console.log('⏳ No PTB available yet — waiting for server or next hour boundary');
+}
+
+// If PTB was saved from Chainlink, adjust it once displayPrice arrives
+function waitForDisplayAndAdjustPtb(savedPtb){
+    let checks=0;
+    const iv=setInterval(()=>{
+        checks++;
+        if(displayPrice&&latestChainlinkPrice){
+            const offset=displayPrice-latestChainlinkPrice;
+            // If offset is significant (>$5), the saved PTB was likely Chainlink
+            if(Math.abs(offset)>5){
+                ptb=savedPtb+offset;
+                savePtb(ptb,'display');
+                console.log('🔧 PTB adjusted by $'+offset.toFixed(2)+' → $'+ptb.toFixed(2));
+            }
+            clearInterval(iv);
+        }
+        if(checks>30)clearInterval(iv); // Give up after 15s
+    },500);
 }
 loadPtb();
 
@@ -247,25 +269,27 @@ function startPtbTimer(){
     
     setTimeout(()=>{
         const ptbPrice=displayPrice||latestChainlinkPrice||btcPrice;
+        const src=displayPrice?'display':'chainlink';
         if(ptbPrice){
             ptb=ptbPrice;
             ptbSetAt=new Date();
             ptbHour=new Date().getUTCHours();
             locked=false;
             prediction=null;
-            savePtb(ptbPrice);
-            console.log('🎯 HOURLY PTB SET: $'+ptbPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
+            savePtb(ptbPrice,src);
+            console.log('🎯 HOURLY PTB SET: $'+ptbPrice.toFixed(2)+' ('+src+') at '+new Date().toLocaleTimeString());
         }
         setInterval(()=>{
             const p=displayPrice||latestChainlinkPrice||btcPrice;
+            const s=displayPrice?'display':'chainlink';
             if(p){
                 ptb=p;
                 ptbSetAt=new Date();
                 ptbHour=new Date().getUTCHours();
                 locked=false;
                 prediction=null;
-                savePtb(p);
-                console.log('🎯 HOURLY PTB SET: $'+p.toFixed(2)+' at '+new Date().toLocaleTimeString());
+                savePtb(p,s);
+                console.log('🎯 HOURLY PTB SET: $'+p.toFixed(2)+' ('+s+') at '+new Date().toLocaleTimeString());
             }
         },hourMs);
     },delay);
