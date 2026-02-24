@@ -112,8 +112,8 @@
 let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
 
 // ═══ PRICE FEEDS ═══
-// crypto_prices (Binance via Polymarket RTDS) = display price (what Polymarket shows)
-// crypto_prices_chainlink = PTB + prediction logic (what Polymarket settles with)
+// Display: crypto_prices (Binance via Polymarket RTDS) — matches Polymarket UI
+// PTB: Binance 1H candle open via REST API — exact settlement source
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
 let displayPrice=null;
@@ -122,12 +122,10 @@ function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
     polyWs.onopen=function(){
-      // Chainlink for PTB/settlement
       polyWs.send(JSON.stringify({
         action:'subscribe',
         subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
       }));
-      // Binance via Polymarket for display — subscribe WITHOUT filter to get all, then check symbol
       polyWs.send(JSON.stringify({
         action:'subscribe',
         subscriptions:[{topic:'crypto_prices',type:'update'}]
@@ -141,11 +139,9 @@ function connectPolyWs(){
           latestChainlinkPrice=d.payload.value;
           latestBtcPrice=d.payload.value;
           btcPrice=d.payload.value;
-          // Fallback display if crypto_prices never arrives
           if(!displayPrice){displayPrice=d.payload.value;updateUI();}
         }
         if(d.topic==='crypto_prices'&&d.payload){
-          // Accept btcusdt in any case
           const sym=(d.payload.symbol||'').toLowerCase();
           if(sym==='btcusdt'){
             displayPrice=d.payload.value;
@@ -173,39 +169,56 @@ connectBtcWs();
 setTimeout(()=>{
   if(!displayPrice&&latestChainlinkPrice){
     console.log('⚠️ crypto_prices not arriving, using Chainlink for display');
-    // Keep updating display from Chainlink
     setInterval(()=>{
       if(latestChainlinkPrice){displayPrice=latestChainlinkPrice;updateUI();}
     },1000);
   }
 },5000);
 
-// If no price yet after 2s, Chainlink should be connected
-setInterval(()=>{
-    if(!btcPrice&&latestChainlinkPrice){
-        btcPrice=latestChainlinkPrice;
-        updateUI();
-    }
-},2000);
-
-// ═══ PTB: EXACT SAME APPROACH AS 5-MIN VERSION ═══
-// Timer fires at exact hour boundary, captures Chainlink price
-// Server shares PTB so late joiners get the real one
+// ═══ PTB: Binance 1H candle open — exact Polymarket hourly settlement source ═══
 let ptbHour=-1;
 
+// Fetch exact Binance 1H candle open price
+async function fetchBinanceHourlyOpen(){
+    try{
+        const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
+        const d=await r.json();
+        if(d&&d[0]){
+            const openPrice=parseFloat(d[0][1]); // [1] = open price
+            console.log('📊 Binance 1H candle open: $'+openPrice.toFixed(2));
+            return openPrice;
+        }
+    }catch(e){console.log('⚠️ Binance API fetch failed:',e)}
+    return null;
+}
+
 // Save PTB to server + localStorage
-function savePtb(price,source){
+function savePtb(price){
     const hour=new Date().getUTCHours();
-    localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now(),source:source||'display'}));
+    localStorage.setItem('ptb_hourly',JSON.stringify({price,hour,ts:Date.now()}));
     fetch('/api/ptb-hourly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,hour})}).catch(()=>{});
 }
 
-// Load PTB — try server first, then localStorage
-// If loaded PTB seems to be from Chainlink (old saves), adjust by current offset
+// Load PTB — try Binance API first (exact), then server, then localStorage
 async function loadPtb(){
     const currentHour=new Date().getUTCHours();
+    const minutesIn=new Date().getMinutes();
     
-    // Try server first
+    // If we're past minute 0, fetch the current 1H candle open from Binance (the definitive PTB)
+    if(minutesIn>=1){
+        const binanceOpen=await fetchBinanceHourlyOpen();
+        if(binanceOpen&&binanceOpen>30000&&binanceOpen<200000){
+            ptb=binanceOpen;
+            ptbSetAt=new Date();
+            ptbSetAt.setMinutes(0,0,0);
+            ptbHour=currentHour;
+            savePtb(binanceOpen);
+            console.log('📌 PTB from Binance 1H candle open: $'+binanceOpen.toFixed(2));
+            return;
+        }
+    }
+    
+    // Try server
     try{
         const r=await fetch('/api/ptb-hourly');
         const d=await r.json();
@@ -215,8 +228,6 @@ async function loadPtb(){
             ptbSetAt.setMinutes(0,0,0);
             ptbHour=currentHour;
             console.log('📌 PTB from server: $'+d.price.toFixed(2));
-            // After displayPrice arrives, check if PTB needs adjusting
-            waitForDisplayAndAdjustPtb(d.price);
             return;
         }
     }catch(e){}
@@ -229,36 +240,16 @@ async function loadPtb(){
             ptbSetAt=new Date();
             ptbSetAt.setMinutes(0,0,0);
             ptbHour=currentHour;
-            console.log('📌 PTB from cache: $'+d.price.toFixed(2)+(d.source?' ('+d.source+')':''));
-            if(d.source!=='display') waitForDisplayAndAdjustPtb(d.price);
+            console.log('📌 PTB from cache: $'+d.price.toFixed(2));
             return;
         }
     }catch(e){}
     
-    console.log('⏳ No PTB available yet — waiting for server or next hour boundary');
-}
-
-// If PTB was saved from Chainlink, adjust it once displayPrice arrives
-function waitForDisplayAndAdjustPtb(savedPtb){
-    let checks=0;
-    const iv=setInterval(()=>{
-        checks++;
-        if(displayPrice&&latestChainlinkPrice){
-            const offset=displayPrice-latestChainlinkPrice;
-            // If offset is significant (>$5), the saved PTB was likely Chainlink
-            if(Math.abs(offset)>5){
-                ptb=savedPtb+offset;
-                savePtb(ptb,'display');
-                console.log('🔧 PTB adjusted by $'+offset.toFixed(2)+' → $'+ptb.toFixed(2));
-            }
-            clearInterval(iv);
-        }
-        if(checks>30)clearInterval(iv); // Give up after 15s
-    },500);
+    console.log('⏳ No PTB available yet — waiting for next hour boundary');
 }
 loadPtb();
 
-// Timer at exact hour boundary
+// Timer at exact hour boundary — then confirm with Binance REST API 5s later
 function startPtbTimer(){
     const now=Date.now();
     const hourMs=3600000;
@@ -267,31 +258,27 @@ function startPtbTimer(){
     
     console.log('⏱️ Next PTB capture in '+(delay/1000/60).toFixed(1)+' minutes');
     
-    setTimeout(()=>{
-        const ptbPrice=displayPrice||latestChainlinkPrice||btcPrice;
-        const src=displayPrice?'display':'chainlink';
-        if(ptbPrice){
-            ptb=ptbPrice;
-            ptbSetAt=new Date();
-            ptbHour=new Date().getUTCHours();
-            locked=false;
-            prediction=null;
-            savePtb(ptbPrice,src);
-            console.log('🎯 HOURLY PTB SET: $'+ptbPrice.toFixed(2)+' ('+src+') at '+new Date().toLocaleTimeString());
-        }
-        setInterval(()=>{
-            const p=displayPrice||latestChainlinkPrice||btcPrice;
-            const s=displayPrice?'display':'chainlink';
-            if(p){
-                ptb=p;
-                ptbSetAt=new Date();
-                ptbHour=new Date().getUTCHours();
-                locked=false;
-                prediction=null;
-                savePtb(p,s);
-                console.log('🎯 HOURLY PTB SET: $'+p.toFixed(2)+' ('+s+') at '+new Date().toLocaleTimeString());
+    async function captureHourlyPtb(){
+        locked=false;
+        prediction=null;
+        ptbHour=new Date().getUTCHours();
+        ptbSetAt=new Date();
+        
+        // Wait 5 seconds for Binance candle to finalize, then fetch exact open
+        setTimeout(async()=>{
+            const binanceOpen=await fetchBinanceHourlyOpen();
+            if(binanceOpen){
+                ptb=binanceOpen;
+                savePtb(binanceOpen);
+                console.log('🎯 HOURLY PTB SET (Binance candle open): $'+binanceOpen.toFixed(2)+' at '+new Date().toLocaleTimeString());
+                updateUI();
             }
-        },hourMs);
+        },5000);
+    }
+    
+    setTimeout(()=>{
+        captureHourlyPtb();
+        setInterval(captureHourlyPtb,hourMs);
     },delay);
 }
 startPtbTimer();
@@ -516,7 +503,7 @@ function updateUI(){
     document.getElementById('currentPrice').textContent='$'+showPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 
-    // Store price history (for prediction logic — uses Chainlink)
+    // Store price history (for prediction logic)
     if(btcPrice){
         priceHistory.push({price:btcPrice,time:Date.now()});
         if(priceHistory.length>200)priceHistory.shift();
