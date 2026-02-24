@@ -381,11 +381,12 @@ function setTimeframe(tf){
 }
 
 // ═══ SAVE/LOAD ═══
-function saveProgress(){try{localStorage.setItem('btcPred',JSON.stringify({predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,signalMultipliers,strategyStats:window.strategyStats||{},lastSaved:Date.now()}))}catch(e){}}
-function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24)return false;priceHistory=d.priceHistory||[];predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;signalMultipliers=d.signalMultipliers||{};window.strategyStats=d.strategyStats||{};
+function saveProgress(){try{const data={predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,signalMultipliers,strategyStats:window.strategyStats||{},lastSaved:Date.now()};localStorage.setItem('btcPred',JSON.stringify(data));console.log('💾 Saved: '+predictionHistory.length+' predictions, '+stats.total+' total, '+stats.correct+' correct')}catch(e){console.log('⚠️ Save failed:',e)}}
+function loadProgress(){try{const s=localStorage.getItem('btcPred');if(!s)return false;const d=JSON.parse(s);if((Date.now()-d.lastSaved)/36e5>24){console.log('⚠️ Saved data expired (>24h)');return false}predictionHistory=d.predictionHistory||[];trainingData=d.trainingData||[];stats=d.stats||stats;signalPerformance=d.signalPerformance||{};signalWeights=d.signalWeights||signalWeights;signalMultipliers=d.signalMultipliers||{};window.strategyStats=d.strategyStats||{};
 // Don't restore priceToBeat — always get fresh from market. Only restore stats/history.
-updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; All models online &middot; Learned weights: '+(Object.keys(signalMultipliers).length||0)+' signals';return true}catch(e){return false}}
-setInterval(saveProgress,3e5);window.addEventListener('beforeunload',saveProgress);
+console.log('📂 Loaded: '+predictionHistory.length+' predictions, '+stats.total+' total, '+stats.correct+' correct');
+updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; All models online &middot; Learned weights: '+(Object.keys(signalMultipliers).length||0)+' signals';return true}catch(e){console.log('⚠️ Load failed:',e);return false}}
+setInterval(saveProgress,30000);window.addEventListener('beforeunload',saveProgress);window.addEventListener('pagehide',saveProgress);
 
 // ═══ UTILITY ═══
 function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
@@ -1305,8 +1306,9 @@ function updateSignalLearning(signals,wasCorrect,predictedUp){
 function checkPrediction(np){
   const m=getActiveMarket();
   const cp=m.currentPrediction;
-  if(!cp||!cp.priceToBeat)return;
+  if(!cp||!cp.priceToBeat){console.log('⚠️ checkPrediction: no currentPrediction');return}
   const pw=cp.willBeat,ab=np>cp.priceToBeat,ok=pw===ab;
+  console.log('✅ CHECK: predicted '+(pw?'YES':'NO')+', actual '+(ab?'ABOVE':'BELOW')+' → '+(ok?'CORRECT ✓':'WRONG ✗'));
   
   // ML training data
   trainingData.push({features:cp.features,label:ab?1:0});
