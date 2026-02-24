@@ -639,20 +639,56 @@ async function makePred(prices,volumes,ptb){
     else if(diff<-100){bearScore+=0.8;sigs.push({name:'vs PTB',signal:'-$'+gap.toFixed(0)+' below',strength:0.8})}
     else sigs.push({name:'vs PTB',signal:(diff>0?'+':'')+diff.toFixed(0),strength:0.3});
 
-    // --- FINAL SCORE ---
-    const total=bullScore+bearScore||1;
-    const bullPct=bullScore/total;
-    const prediction=bullPct>0.5;
-    // Confidence reflects how decisive the signal split is
-    const margin=Math.abs(bullPct-0.5)*2; // 0=tie, 1=unanimous
-    const confidence=Math.max(50,Math.min(92,55+margin*37)).toFixed(1);
-
+    // --- ML MODELS (fetch BEFORE final decision so they influence the outcome) ---
     let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
-    try{feat=extractFeat(prices,volumes);const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];mp=await getMP(feat,sf)}catch(e){}
-    const cp2=detectPat(jp);
+    try{
+      feat=extractFeat(prices,volumes);
+      const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];
+      mp=await getMP(feat,sf);
+    }catch(e){console.log('ML fetch error:',e)}
 
-    console.log('📊 Bull:'+bullScore.toFixed(1)+' Bear:'+bearScore.toFixed(1)+' → '+(prediction?'YES ↑':'NO ↓')+' conf:'+confidence+'%');
-    return{willBeat:prediction,confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat,bullScore,bearScore};
+    // Convert model outputs (0-1) to a combined ML score
+    // Weight LSTM highest (sequential patterns), then Technical, then Hybrid
+    // Only count models that have actually trained (deviate meaningfully from 0.5)
+    const lstmW = Math.abs(mp.lstm-0.5)>0.08 ? 3.0 : 0.8;  // trained = high weight, untrained = low
+    const techW = Math.abs(mp.technical-0.5)>0.08 ? 2.5 : 0.8;
+    const hybW  = Math.abs(mp.hybrid-0.5)>0.08 ? 2.0 : 0.8;
+    const mlBull = mp.lstm*lstmW + mp.technical*techW + mp.hybrid*hybW;
+    const mlBear = (1-mp.lstm)*lstmW + (1-mp.technical)*techW + (1-mp.hybrid)*hybW;
+    const mlTotalW = lstmW+techW+hybW;
+    // ML composite: >0.5 = bullish, <0.5 = bearish
+    const mlComposite = mlBull/mlTotalW; // 0-1
+
+    // --- FINAL BLENDED SCORE ---
+    // Technical signals: normalize to 0-1 scale
+    const techTotal=bullScore+bearScore||1;
+    const techComposite=bullScore/techTotal; // 0-1
+
+    // Blend: ML gets 40% weight, technical signals get 60%
+    // (ML earns more influence as it gets trained data)
+    const mlWeight = 0.40;
+    const techWeight = 0.60;
+    const finalComposite = techComposite*techWeight + mlComposite*mlWeight;
+    const prediction = finalComposite > 0.5;
+
+    // Confidence: based on how far from 0.5 the blended score is, PLUS agreement between ML and technical
+    const margin = Math.abs(finalComposite-0.5)*2; // 0=tied, 1=unanimous
+    const mlTechAgree = (mlComposite>0.5) === (techComposite>0.5); // do ML and signals agree?
+    const agreementBonus = mlTechAgree ? 5 : -5; // bonus if they agree, penalty if they disagree
+    const confidence = Math.max(48,Math.min(92, Math.round(52+margin*35+agreementBonus))).toFixed(1);
+
+    // Add ML signal summary to signals list
+    const mlDir = mlComposite>0.5;
+    const mlStrength = Math.abs(mlComposite-0.5)*2;
+    sigs.push({
+      name:'ML Ensemble',
+      signal:(mlDir?'UP ↑':'DOWN ↓')+' (LSTM '+(mp.lstm*100).toFixed(0)+'% · Tech '+(mp.technical*100).toFixed(0)+'% · Hybrid '+(mp.hybrid*100).toFixed(0)+'%)',
+      strength: parseFloat((mlStrength*4).toFixed(2))
+    });
+
+    const cp2=detectPat(jp);
+    console.log('📊 Tech:'+techComposite.toFixed(2)+' ML:'+mlComposite.toFixed(2)+' Blend:'+finalComposite.toFixed(2)+' Agree:'+mlTechAgree+' → '+(prediction?'YES ↑':'NO ↓')+' conf:'+confidence+'%');
+    return{willBeat:prediction,confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat,bullScore,bearScore,mlComposite,techComposite,finalComposite};
   }catch(e){
     console.error('makePred error:',e);
     return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]};
@@ -745,12 +781,12 @@ if(!predictionLock.locked){
     const diffColor=callDifficulty==='CLEAR'?'var(--up)':callDifficulty==='TOO CLOSE'?'var(--dn)':'#eab308';
     document.getElementById('predictionValue').innerHTML=
       '<div style="font-size:1em;color:var(--tx2)">⏳ '+callDifficulty+' — locking in <span style="color:var(--btc);font-family:JetBrains Mono,monospace">'+secsToLock+'s</span></div>'
-      +'<div style="font-size:.58em;margin-top:6px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'
+      +'<div style="font-size:.55em;margin-top:6px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'
       +'<span style="color:'+leanColor+'">Leaning '+leanArrow+' '+(finalPrediction?'YES':'NO')+'</span>'
       +'<span style="color:var(--tx3)">|</span>'
       +'<span style="color:'+diffColor+'">$'+priceDiff.toFixed(0)+' from PTB</span>'
       +'<span style="color:var(--tx3)">|</span>'
-      +'<span style="color:var(--tx3)">Bull '+((pred.bullScore||0).toFixed(1))+' Bear '+((pred.bearScore||0).toFixed(1))+'</span>'
+      +'<span style="color:var(--tx3)">Tech '+(Math.round((pred.techComposite||0.5)*100))+'% · ML '+(Math.round((pred.mlComposite||0.5)*100))+'% · Blend '+(Math.round((pred.finalComposite||0.5)*100))+'%</span>'
       +'</div>';
     document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓')+' (not locked)';
     document.getElementById('predictionDetails').textContent=
