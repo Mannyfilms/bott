@@ -1142,7 +1142,7 @@ function applyLearned(name,baseScore){
   return baseScore*sm.mult;
 }
 
-async function makePred(prices,volumes,ptb){if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
+async function makePred(prices,volumes,ptb){try{if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
 const jp=prices.map(p=>p.price),cur=jp[jp.length-1];
 
 // ═══ SIMPLE: How long has price been above/below PTB? ═══
@@ -1172,14 +1172,14 @@ const gapConf=Math.min(gap/50*15,15); // bigger gap = more confident
 const timeConf=dominance*15; // more time on one side = more confident
 const confidence=Math.max(85,Math.min(98,85+gapConf+timeConf)).toFixed(1);
 
-const feat=extractFeat(prices,volumes);
-const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];
-const mp=await getMP(feat,sf);
+let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
+try{feat=extractFeat(prices,volumes);const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];mp=await getMP(feat,sf)}catch(e){console.log('⚠️ Feature extraction failed (ok):',e.message)}
 const cp2=detectPat(jp);
 
 console.log('📊 Above: '+Math.round(abovePct*100)+'% | Gap: $'+gap.toFixed(0)+' | → '+(prediction?'YES':'NO'));
 
 return{willBeat:prediction,confidence:confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat}}
+catch(e){console.log('❌ makePred error:',e);return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]}}}
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){
@@ -1193,7 +1193,8 @@ document.getElementById('sma5').textContent=s5?'$'+s5.toFixed(2):'--';document.g
 if(vols.length>=20){const rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10,vc=((rv-ov)/ov*100).toFixed(1);document.getElementById('volumeTrend').textContent=(vc>0?'+ ':'- ')+vc+'%';document.getElementById('volumeTrend').style.color=vc>0?'var(--up)':'var(--dn)'}
 updateExt();
 const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe);
-if(priceHistory.length>=5&&ptb){const pred=await makePred(priceHistory,vols,ptb);
+if(priceHistory.length>=5&&ptb){let pred;try{pred=await makePred(priceHistory,vols,ptb)}catch(e){console.log('❌ makePred call failed:',e);return}
+if(!pred||pred.willBeat===null)return;
 
 // ═══ PREDICTION LOCK SYSTEM — GAP-BASED TIMING ═══
 // Big gap ($50+) = lock in ~10s, Small gap ($5) = wait up to 2 minutes
@@ -1379,6 +1380,7 @@ if(priceHistory.length>500)priceHistory.shift();
   const m=markets[tf];
   const currentSlot=getSlot(tf,now);
   if(m.currentSlot!==null&&m.currentSlot!==currentSlot){
+    console.log('🔄 SLOT CHANGE ['+tf+'m]: '+m.currentSlot+' → '+currentSlot+' | hasPred: '+(!!m.currentPrediction)+' | selected: '+(tf===selectedTimeframe));
     if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
