@@ -109,7 +109,6 @@
 
 <script>
 // ═══ FREE TIER: 1-HOUR BTC PREDICTION ═══
-// Improved scoring engine inspired by pro ensemble system
 let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
 
 // ═══ PRICE FEEDS ═══
@@ -326,19 +325,36 @@ function getHourStart(){
 // checkPtb is now a no-op — PTB comes from server or timer only
 function checkPtb(){}
 
-// RSI calculation
-function calcRsi(prices,period){
-    if(prices.length<period+1)return null;
-    let gains=0,losses=0;
-    for(let i=prices.length-period;i<prices.length;i++){
-        const diff=prices[i]-prices[i-1];
-        if(diff>0)gains+=diff;else losses-=diff;
-    }
-    const rs=gains/Math.max(losses,0.001);
-    return 100-(100/(1+rs));
+// ═══ POSITION TRACKER — tracks time above/below PTB ═══
+let positionHistory=[]; // {above: bool, diff: number, time: timestamp}
+
+function trackPosition(){
+    if(!btcPrice||!ptb)return;
+    const showPrice=displayPrice||btcPrice;
+    positionHistory.push({above:showPrice>=ptb,diff:showPrice-ptb,time:Date.now()});
+    // Keep last 720 samples (~1 hour at 5s intervals)
+    if(positionHistory.length>720)positionHistory.shift();
 }
 
-// Price history for indicators
+function getPositionStats(){
+    if(positionHistory.length<2)return{abovePct:0.5,avgDiff:0,trend:0,samples:0};
+    const aboveCount=positionHistory.filter(p=>p.above).length;
+    const abovePct=aboveCount/positionHistory.length;
+    const avgDiff=positionHistory.reduce((s,p)=>s+p.diff,0)/positionHistory.length;
+    // Trend: recent vs older half
+    const mid=Math.floor(positionHistory.length/2);
+    const recentHalf=positionHistory.slice(mid);
+    const olderHalf=positionHistory.slice(0,mid);
+    const recentAvg=recentHalf.reduce((s,p)=>s+p.diff,0)/recentHalf.length;
+    const olderAvg=olderHalf.reduce((s,p)=>s+p.diff,0)/olderHalf.length;
+    const trend=recentAvg-olderAvg;
+    return{abovePct,avgDiff,trend,samples:positionHistory.length};
+}
+
+// Track position every 5 seconds
+setInterval(trackPosition,5000);
+
+// Price history for display
 let priceHistory=[];
 let sentimentData={fearGreed:null,sentiment:null,funding:null};
 
@@ -371,211 +387,72 @@ async function fetchSentiment(){
     }catch(e){}
 }
 
-// ═══ INDICATOR HELPERS ═══
-function sma(d,p){if(d.length<p)return null;return d.slice(-p).reduce((a,b)=>a+b,0)/p}
-function ema(d,p){if(d.length<p)return null;const k=2/(p+1);let e=sma(d.slice(0,p),p);for(let i=p;i<d.length;i++)e=d[i]*k+e*(1-k);return e}
-function macd(d){if(d.length<26)return null;const m=ema(d,12)-ema(d,26);return{macd:m,bullish:m>0}}
-function bollingerBands(d,p=20){if(d.length<p)return null;const avg=sma(d,p);const std=Math.sqrt(d.slice(-p).reduce((s,x)=>s+Math.pow(x-avg,2),0)/p);return{upper:avg+2*std,lower:avg-2*std,mid:avg,pos:(d[d.length-1]-(avg-2*std))/(4*std)}}
-function stochastic(d,p=14){if(d.length<p)return null;const s=d.slice(-p),h=Math.max(...s),l=Math.min(...s);if(h===l)return 50;return((d[d.length-1]-l)/(h-l))*100}
-function meanReversionZ(d,p=20){if(d.length<p)return null;const avg=sma(d,p);const std=Math.sqrt(d.slice(-p).reduce((s,x)=>s+Math.pow(x-avg,2),0)/p);return std?(d[d.length-1]-avg)/std:0}
-function emaCrossover(d){if(d.length<25)return null;const e9=ema(d,9),e21=ema(d,21);if(!e9||!e21)return null;const e9p=ema(d.slice(0,-1),9),e21p=ema(d.slice(0,-1),21);return{bullish:e9>e21,crossUp:e9p<=e21p&&e9>e21,crossDown:e9p>=e21p&&e9<e21}}
-
-// ═══ POSITION TRACKER — how long has price stayed above/below PTB this hour? ═══
-let positionHistory=[];
-function trackPosition(price,ptb){
-    positionHistory.push({above:price>=ptb,diff:price-ptb,ts:Date.now()});
-    if(positionHistory.length>200)positionHistory.shift();
-}
-function getPositionBias(){
-    if(positionHistory.length<3)return{bias:0,abovePct:0.5,avgDiff:0,trend:0};
-    const abovePct=positionHistory.filter(p=>p.above).length/positionHistory.length;
-    const avgDiff=positionHistory.reduce((s,p)=>s+p.diff,0)/positionHistory.length;
-    const half=Math.floor(positionHistory.length/2);
-    const recentAvg=positionHistory.slice(-half).reduce((s,p)=>s+p.diff,0)/half;
-    const olderAvg=positionHistory.slice(0,half).reduce((s,p)=>s+p.diff,0)/half;
-    return{bias:(abovePct-0.5)*2,abovePct,avgDiff,trend:recentAvg-olderAvg};
-}
-function resetPositionHistory(){positionHistory=[];}
-
-// Make prediction once we have enough price data
-// WARMUP: need at least 3 minutes of ticks (~36 ticks at 5s) before making a prediction
-const MIN_TICKS_BEFORE_PREDICT=36;
-
+// ═══ PREDICTION — same strategy as 5-min but scaled for 1 hour ═══
+// Tracks time above/below PTB, locks based on gap size
+// Gap-based lock timing: big gap = fast lock, small gap = wait longer
+// Max 15 minutes to lock (scaled from 5-min's 2 minutes: 2min/5min = 15min/60min)
 function makePrediction(){
     if(!btcPrice||!ptb||locked)return;
     const now=new Date();
-    // Wait for warmup — need meaningful price history
-    if(priceHistory.length<MIN_TICKS_BEFORE_PREDICT)return;
-
-    const prices=priceHistory.map(p=>p.price);
-    const diff=btcPrice-ptb;
-    const abovePtb=diff>0;
+    const showPrice=displayPrice||btcPrice;
+    const diff=showPrice-ptb;
     const gap=Math.abs(diff);
+    const aboveNow=diff>0;
+    const minutesIn=now.getMinutes();
+    const minutesLeft=60-minutesIn;
 
-    // ═══ IMPROVED SCORING ENGINE ═══
-    let score=0;
+    // Need at least 30 seconds of tracking (6 samples)
+    const pos=getPositionStats();
+    if(pos.samples<6){
+        document.getElementById('status').textContent='Collecting data... ('+pos.samples+'/6 samples)';
+        return;
+    }
+
+    // ═══ GAP-BASED LOCK TIMING ═══
+    // $200+ gap → 2 min, $100 → 5 min, $50 → 8 min, $10 → 15 min
+    const lockAfterMins=Math.max(2,Math.min(15, 15-Math.min(gap,200)*0.065));
+    const shouldLock=minutesIn>=lockAfterMins;
+
+    // The prediction: above PTB for most of the time → YES
+    const pred=pos.abovePct>0.5;
+    const dominance=Math.abs(pos.abovePct-0.5)*2; // 0=50/50, 1=100% one side
+
+    // Build signals
     const signals=[];
+    signals.push({name:'Price vs PTB: '+(aboveNow?'+':'-')+'$'+gap.toFixed(0)+' ('+minutesLeft+'m left)',up:aboveNow});
+    signals.push({name:'Time Above PTB: '+Math.round(pos.abovePct*100)+'% ('+pos.samples+' samples)',up:pos.abovePct>0.5});
+    signals.push({name:'Avg Distance: '+(pos.avgDiff>0?'+':'')+pos.avgDiff.toFixed(2),up:pos.avgDiff>0});
+    signals.push({name:'Trend: '+(pos.trend>0?'Moving UP':'Moving DOWN'),up:pos.trend>0});
 
-    // ═══ SESSION DETECTION ═══
-    const hourET=new Date().toLocaleString('en-US',{timeZone:'America/New_York',hour:'numeric',hour12:false});
-    const h=parseInt(hourET);
-    const isUSSession=h>=9&&h<16;
-    const isAsiaSession=h>=20||h<4;
-    const isEuroSession=h>=3&&h<9;
-    const sessionName=isUSSession?'US 🇺🇸':isAsiaSession?'ASIA 🌏':isEuroSession?'EURO 🇪🇺':'OFF';
-    const momentumBoost=isUSSession?1.5:isEuroSession?1.2:0.8;
-    const reversionBoost=isAsiaSession?1.5:isUSSession?0.7:1.0;
-    signals.push({name:'Session: '+sessionName,up:isUSSession});
+    if(!shouldLock){
+        // Still watching — show lean
+        const minsToLock=Math.ceil(lockAfterMins-minutesIn);
+        document.getElementById('status').textContent='⏳ Watching... locks in ~'+minsToLock+'m (gap $'+gap.toFixed(0)+')';
+        document.getElementById('predDisplay').className='pred pred-nu';
+        document.getElementById('predValue').innerHTML=
+            '<div style="font-size:.9em;color:var(--tx2)">⏳ Watching...</div>'+
+            '<div style="font-size:.45em;margin-top:6px;color:var(--tx3)">'+(aboveNow?'↑ +$':'↓ -$')+gap.toFixed(0)+' · Above '+Math.round(pos.abovePct*100)+'% of time</div>';
+        document.getElementById('predConf').textContent='Leaning: '+(pred?'YES ↑':'NO ↓')+' · Locks in ~'+minsToLock+'m';
+        document.getElementById('confPct').textContent='--';
+        document.getElementById('confBar').style.width='0%';
 
-    // 1. PRICE vs PTB — heaviest signal (scaled by time remaining + gap size)
-    const minutesLeft=60-now.getMinutes();
-    const timePct=minutesLeft/60;
-    const timeScale=5+Math.pow(1-timePct,2)*15;
-    const gapScale=Math.min(gap/50,3);
-    const priceWeight=timeScale*Math.max(gapScale,0.5);
-    score+=abovePtb?priceWeight:-priceWeight;
-    signals.push({name:'Price vs PTB: '+(abovePtb?'+':'-')+'$'+gap.toFixed(0)+' ('+minutesLeft+'m left)',up:abovePtb});
-
-    // 2. POSITION BIAS — how has price behaved vs PTB this whole hour?
-    trackPosition(btcPrice,ptb);
-    if(positionHistory.length>=10){
-        const pb=getPositionBias();
-        const pbWeight=1.5*momentumBoost;
-        score+=pb.bias*pbWeight;
-        // Also score the intra-hour trend direction
-        if(Math.abs(pb.trend)>5){
-            score+=pb.trend>0?0.8*momentumBoost:-0.8*momentumBoost;
-            signals.push({name:'Hour trend: '+(pb.trend>0?'Rising ↑':'Falling ↓')+' $'+Math.abs(pb.trend).toFixed(0),up:pb.trend>0});
-        }
-        signals.push({name:'Time above PTB: '+(pb.abovePct*100).toFixed(0)+'% of hour',up:pb.abovePct>0.5});
+        signals.push({name:'Lock in ~'+minsToLock+'m (gap $'+gap.toFixed(0)+')',up:pred});
+        document.getElementById('signals').innerHTML=signals.map(s=>
+            '<div class="sig '+(s.up?'sig-u':'sig-d')+'"><span>'+s.name+'</span><span style="color:'+(s.up?'var(--up)':'var(--dn)')+'">'+
+            (s.up?'▲':'▼')+'</span></div>').join('');
+        return;
     }
 
-    // 3. RSI — momentum in US, mean-reversion in Asia
-    const rsiVal=calcRsi(prices,14);
-    if(rsiVal){
-        if(isAsiaSession&&(rsiVal>75||rsiVal<25)){
-            const revScore=rsiVal>75?-1.8*reversionBoost:1.8*reversionBoost;
-            score+=revScore;
-            signals.push({name:'RSI '+rsiVal.toFixed(0)+': '+(rsiVal>75?'OVERBOUGHT→FADE':'OVERSOLD→BOUNCE'),up:rsiVal<25});
-        }else if(rsiVal>70||rsiVal<30){
-            // Extreme RSI gets contrarian weight even in US
-            const w=0.8;
-            score+=rsiVal>70?-w:w;
-            signals.push({name:'RSI '+rsiVal.toFixed(0)+': '+(rsiVal>70?'Overbought':'Oversold'),up:rsiVal<30});
-        }else{
-            const w=0.6*momentumBoost;
-            score+=rsiVal>50?w:-w;
-            signals.push({name:'RSI: '+rsiVal.toFixed(0),up:rsiVal>50});
-        }
-    }
-
-    // 4. MACD — trend momentum
-    const mc=macd(prices);
-    if(mc){
-        const w=0.7*momentumBoost;
-        score+=mc.bullish?w:-w;
-        signals.push({name:'MACD: '+(mc.bullish?'Bullish':'Bearish')+' ($'+mc.macd.toFixed(1)+')',up:mc.bullish});
-    }
-
-    // 5. EMA 9/21 Crossover — the key scalping signal
-    const emaCross=emaCrossover(prices);
-    if(emaCross){
-        const w=emaCross.crossUp||emaCross.crossDown?1.2*momentumBoost:0.5*momentumBoost;
-        score+=emaCross.bullish?w:-w;
-        const label=emaCross.crossUp?'Golden Cross ▲':emaCross.crossDown?'Death Cross ▼':emaCross.bullish?'Bullish':'Bearish';
-        signals.push({name:'EMA 9/21: '+label,up:emaCross.bullish});
-    }
-
-    // 6. Bollinger Bands position
-    const bb=bollingerBands(prices);
-    if(bb){
-        const pos=bb.pos; // 0=at lower band, 1=at upper
-        if(isAsiaSession){
-            // Asia: revert from extremes
-            if(pos>0.85){score-=1.0*reversionBoost;signals.push({name:'BB: Near upper (Asia→fade)',up:false});}
-            else if(pos<0.15){score+=1.0*reversionBoost;signals.push({name:'BB: Near lower (Asia→bounce)',up:true});}
-        }else{
-            // US/Euro: momentum — above midline = bullish
-            const w=0.5*momentumBoost;
-            score+=pos>0.5?w:-w;
-            signals.push({name:'BB position: '+(pos*100).toFixed(0)+'%',up:pos>0.5});
-        }
-    }
-
-    // 7. Mean Reversion Z-Score — statistical extremes
-    const zScore=meanReversionZ(prices,Math.min(prices.length,30));
-    if(zScore!==null&&Math.abs(zScore)>1.5){
-        const revScore=zScore>2?-1.2*reversionBoost:zScore<-2?1.2*reversionBoost:zScore>1.5?-0.6:0.6;
-        score+=revScore;
-        signals.push({name:'Z-Score: '+zScore.toFixed(1)+' '+(zScore>1.5?'(Overbought)':'(Oversold)'),up:zScore<-1.5});
-    }
-
-    // 8. Stochastic — fast oscillator
-    const stoch=stochastic(prices);
-    if(stoch!==null){
-        if(stoch>80){score-=0.6*reversionBoost;signals.push({name:'Stoch '+stoch.toFixed(0)+': Overbought',up:false});}
-        else if(stoch<20){score+=0.6*reversionBoost;signals.push({name:'Stoch '+stoch.toFixed(0)+': Oversold',up:true});}
-        else{const w=0.3;score+=stoch>50?w:-w;signals.push({name:'Stoch: '+stoch.toFixed(0),up:stoch>50});}
-    }
-
-    // 9. Recent tick direction (momentum of last ~2 minutes)
-    if(prices.length>=12){
-        const recent=prices.slice(-12);
-        const dir=recent[11]-recent[0];
-        const w=0.5*momentumBoost;
-        score+=dir>0?w:-w;
-        signals.push({name:'2min Direction: '+(dir>0?'↑ +$':'-$')+Math.abs(dir).toFixed(0),up:dir>0});
-    }
-
-    // 10. Streak fade — if candles have moved hard one way, lean opposite in Asia
-    if(prices.length>=20){
-        let upRun=0,downRun=0;
-        for(let i=prices.length-10;i<prices.length;i++){
-            if(prices[i]>prices[i-1])upRun++;else if(prices[i]<prices[i-1])downRun++;
-        }
-        const streak=Math.max(upRun,downRun);
-        const streakUp=upRun>downRun;
-        if(streak>=7&&gap<30){
-            const fadeScore=streakUp?-0.9*reversionBoost:0.9*reversionBoost;
-            score+=fadeScore;
-            signals.push({name:'Streak fade: '+streak+'x '+(streakUp?'UP→fade':'DOWN→fade'),up:!streakUp});
-        }
-    }
-
-    // 11. Sentiment — boosted in US (institutional driven)
-    if(sentimentData.sentiment){
-        const bullish=sentimentData.sentiment==='Bullish';
-        const w=isUSSession?0.6:0.3;
-        score+=bullish?w:-w;
-        signals.push({name:'Sentiment: '+sentimentData.sentiment,up:bullish});
-    }
-
-    // 12. Funding rate — contrarian signal (extreme funding = crowded trade)
-    if(sentimentData.funding){
-        const rate=parseFloat(sentimentData.funding);
-        if(Math.abs(rate)>0.01){
-            if(Math.abs(rate)>0.05){
-                // Extremely crowded → contrarian
-                const w=0.9*reversionBoost;
-                score+=rate>0?-w:w;
-                signals.push({name:'Funding '+(rate>0?'extreme long→fade':'extreme short→bounce'),up:rate<0});
-            }else{
-                const w=0.4*(isUSSession?momentumBoost:0.8);
-                score+=rate>0?w:-w;
-                signals.push({name:'Funding: '+sentimentData.funding,up:rate>0});
-            }
-        }
-    }
-
-    // ═══ SCORE DECIDES — no overrides ═══
-    const pred=score>0;
-    const strategy='SCORE '+(score>0?'+':'')+score.toFixed(1);
-
-    // Confidence (kept same as original)
-    const conf=Math.max(85,Math.min(98,85+Math.abs(score)/priceWeight*10));
-
-    prediction={willBeat:pred,confidence:Math.round(conf),strategy:strategy};
+    // ═══ LOCK IT ═══
     locked=true;
+
+    // Confidence: gap size + dominance
+    const gapConf=Math.min(gap/100*10,10);
+    const timeConf=dominance*10;
+    const conf=Math.max(85,Math.min(98,Math.round(85+gapConf+timeConf)));
+
+    const strategy='ABOVE '+Math.round(pos.abovePct*100)+'%';
+    prediction={willBeat:pred,confidence:conf,strategy:strategy};
 
     signals.push({name:'→ '+(pred?'YES ↑':'NO ↓')+' ('+strategy+')',up:pred});
 
@@ -584,7 +461,7 @@ function makePrediction(){
         (s.up?'▲':'▼')+'</span></div>').join('');
 
     updatePredDisplay();
-    console.log('🔒 LOCKED: '+(pred?'YES ↑':'NO ↓')+' | '+sessionName+' | '+strategy+' | Conf: '+conf.toFixed(0)+'%');
+    console.log('🔒 LOCKED at '+minutesIn+'m (gap $'+gap.toFixed(0)+' → lockAfter '+lockAfterMins.toFixed(0)+'m): '+(pred?'YES ↑':'NO ↓')+' | Above '+Math.round(pos.abovePct*100)+'%');
 }
 
 function updatePredDisplay(){
@@ -592,7 +469,7 @@ function updatePredDisplay(){
     const el=document.getElementById('predDisplay');
     el.className='pred '+(prediction.willBeat?'pred-up':'pred-dn');
     document.getElementById('predValue').innerHTML=
-        '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES':'↓ NO')+'</div>'+
+        '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES 🔒':'↓ NO 🔒')+'</div>'+
         '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?ptb.toFixed(2):'--')+'</div>';
     document.getElementById('predConf').textContent='Confidence: '+prediction.confidence+'%';
     document.getElementById('confPct').textContent=prediction.confidence+'%';
@@ -607,7 +484,7 @@ function updateUI(){
     document.getElementById('currentPrice').textContent='$'+showPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 
-    // Store price history (for prediction logic)
+    // Store price history
     if(btcPrice){
         priceHistory.push({price:btcPrice,time:Date.now()});
         if(priceHistory.length>200)priceHistory.shift();
@@ -629,19 +506,10 @@ function updateUI(){
     const secs=Math.floor((tl%60000)/1000);
     document.getElementById('countdown').textContent=mins+'m '+secs+'s';
 
-    // Status
-    if(locked&&prediction){
-        document.getElementById('status').textContent='🔒 Prediction locked: '+(prediction.willBeat?'YES ↑':'NO ↓')+' | '+prediction.strategy;
-    }else if(!ptb){
-        const end=getHourEnd();
-        const tl=end-new Date();
-        const mins=Math.floor(tl/60000);
-        document.getElementById('status').textContent='⏳ Waiting for PTB — will capture at next hour mark ('+mins+'m)';
-    }else if(ptb&&priceHistory.length<MIN_TICKS_BEFORE_PREDICT){
-        const secsLeft=Math.ceil((MIN_TICKS_BEFORE_PREDICT-priceHistory.length)*5);
-        document.getElementById('status').textContent='⏳ Warming up... '+priceHistory.length+'/'+MIN_TICKS_BEFORE_PREDICT+' ticks (~'+secsLeft+'s)';
-    }else if(ptb){
-        document.getElementById('status').textContent='Analyzing signals... prediction imminent';
+    // Status (only if not already showing prediction status)
+    if(!locked&&!ptb){
+        const mins2=Math.floor((getHourEnd()-new Date())/60000);
+        document.getElementById('status').textContent='⏳ Waiting for PTB — will capture at next hour mark ('+mins2+'m)';
     }
 
     checkPtb();
@@ -655,7 +523,7 @@ setInterval(()=>{
         locked=false;
         prediction=null;
         ptb=null;
-        resetPositionHistory();
+        positionHistory=[];
         document.getElementById('predDisplay').className='pred pred-nu';
         document.getElementById('predValue').textContent='--';
         document.getElementById('predConf').textContent='New hour starting...';
