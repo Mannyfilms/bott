@@ -246,7 +246,7 @@ function startPtbTimer(){
     console.log('⏱️ Next PTB capture in '+(delay/1000/60).toFixed(1)+' minutes');
     
     setTimeout(()=>{
-        const ptbPrice=latestChainlinkPrice||btcPrice;
+        const ptbPrice=displayPrice||latestChainlinkPrice||btcPrice;
         if(ptbPrice){
             ptb=ptbPrice;
             ptbSetAt=new Date();
@@ -257,7 +257,7 @@ function startPtbTimer(){
             console.log('🎯 HOURLY PTB SET: $'+ptbPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
         }
         setInterval(()=>{
-            const p=latestChainlinkPrice||btcPrice;
+            const p=displayPrice||latestChainlinkPrice||btcPrice;
             if(p){
                 ptb=p;
                 ptbSetAt=new Date();
@@ -501,7 +501,7 @@ function updateUI(){
     if(ptb){
         document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         document.getElementById('ptbTime').textContent=ptbSetAt?'Set at '+ptbSetAt.toLocaleTimeString():'Set at hour mark';
-        const d=btcPrice-ptb,p=(d/ptb*100).toFixed(3);
+        const d=showPrice-ptb,p=(d/ptb*100).toFixed(3);
         document.getElementById('vsComparison').innerHTML=d>0?
             '<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':
             '<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>';
