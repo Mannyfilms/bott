@@ -464,7 +464,7 @@ function updatePredDisplay(){
 
 function updateUI(){
     if(!btcPrice)return;
-    document.getElementById('currentPrice').textContent='$'+btcPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    document.getElementById('currentPrice').textContent='$'+(btcPrice+22).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 
     // Store price history (for prediction logic — uses Chainlink)
