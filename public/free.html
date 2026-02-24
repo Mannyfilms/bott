@@ -111,23 +111,28 @@
 // ═══ FREE TIER: 1-HOUR BTC PREDICTION ═══
 let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
 
-// ═══ PRICE FEEDS — EXACT COPY FROM 5-MIN VERSION ═══
+// ═══ PRICE FEEDS ═══
+// crypto_prices (Binance via Polymarket RTDS) = display price (what Polymarket shows)
+// crypto_prices_chainlink = PTB + prediction logic (what Polymarket settles with)
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
+let displayPrice=null;
 
 function connectPolyWs(){
   try{
     polyWs=new WebSocket('wss://ws-live-data.polymarket.com');
     polyWs.onopen=function(){
+      // Chainlink for PTB/settlement
       polyWs.send(JSON.stringify({
         action:'subscribe',
         subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]
       }));
+      // Binance via Polymarket for display — subscribe WITHOUT filter to get all, then check symbol
       polyWs.send(JSON.stringify({
         action:'subscribe',
-        subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]
+        subscriptions:[{topic:'crypto_prices',type:'update'}]
       }));
-      console.log('Connected to Polymarket RTDS (Chainlink BTC/USD stream)');
+      console.log('Connected to Polymarket RTDS');
     };
     polyWs.onmessage=function(e){
       try{
@@ -136,9 +141,17 @@ function connectPolyWs(){
           latestChainlinkPrice=d.payload.value;
           latestBtcPrice=d.payload.value;
           btcPrice=d.payload.value;
-          updateUI();
-        }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
-          if(!latestChainlinkPrice){latestBtcPrice=d.payload.value;btcPrice=d.payload.value;updateUI();}
+          // Fallback display if crypto_prices never arrives
+          if(!displayPrice){displayPrice=d.payload.value;updateUI();}
+        }
+        if(d.topic==='crypto_prices'&&d.payload){
+          // Accept btcusdt in any case
+          const sym=(d.payload.symbol||'').toLowerCase();
+          if(sym==='btcusdt'){
+            displayPrice=d.payload.value;
+            if(!latestChainlinkPrice){latestBtcPrice=d.payload.value;btcPrice=d.payload.value;}
+            updateUI();
+          }
         }
       }catch(ex){}
     };
@@ -151,10 +164,21 @@ function connectPolyWs(){
   }catch(e){setTimeout(connectPolyWs,5000)}
 }
 
-// BACKUP: Binance WebSocket (in case Polymarket RTDS fails)
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice){latestBtcPrice=parseFloat(d.p);btcPrice=parseFloat(d.p);updateUI()}};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+// BACKUP: Direct Binance WebSocket
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);const p=parseFloat(d.p);if(!displayPrice){displayPrice=p;if(!btcPrice)btcPrice=p;updateUI()}};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();
 connectBtcWs();
+
+// If crypto_prices never arrives after 5 seconds, use Chainlink for display
+setTimeout(()=>{
+  if(!displayPrice&&latestChainlinkPrice){
+    console.log('⚠️ crypto_prices not arriving, using Chainlink for display');
+    // Keep updating display from Chainlink
+    setInterval(()=>{
+      if(latestChainlinkPrice){displayPrice=latestChainlinkPrice;updateUI();}
+    },1000);
+  }
+},5000);
 
 // If no price yet after 2s, Chainlink should be connected
 setInterval(()=>{
@@ -454,7 +478,7 @@ function updatePredDisplay(){
     el.className='pred '+(prediction.willBeat?'pred-up':'pred-dn');
     document.getElementById('predValue').innerHTML=
         '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES':'↓ NO')+'</div>'+
-        '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?(ptb+22).toFixed(2):'--')+'</div>';
+        '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?ptb.toFixed(2):'--')+'</div>';
     document.getElementById('predConf').textContent='Confidence: '+prediction.confidence+'%';
     document.getElementById('confPct').textContent=prediction.confidence+'%';
     document.getElementById('confBar').style.width=prediction.confidence+'%';
@@ -463,8 +487,9 @@ function updatePredDisplay(){
 }
 
 function updateUI(){
-    if(!btcPrice)return;
-    document.getElementById('currentPrice').textContent='$'+(btcPrice+22).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    if(!btcPrice&&!displayPrice)return;
+    const showPrice=displayPrice||btcPrice;
+    document.getElementById('currentPrice').textContent='$'+showPrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 
     // Store price history (for prediction logic — uses Chainlink)
@@ -474,7 +499,7 @@ function updateUI(){
     }
 
     if(ptb){
-        document.getElementById('priceToBeat').textContent='$'+(ptb+22).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         document.getElementById('ptbTime').textContent=ptbSetAt?'Set at '+ptbSetAt.toLocaleTimeString():'Set at hour mark';
         const d=btcPrice-ptb,p=(d/ptb*100).toFixed(3);
         document.getElementById('vsComparison').innerHTML=d>0?
