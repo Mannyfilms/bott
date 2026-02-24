@@ -277,9 +277,27 @@ let predictionLock={
   lockPtb:null,        // PTB when locked
   overrideThreshold:100 // $ move needed to override lock
 };
+function savePredictionLock(){
+  try{
+    const slot=Math.floor(Date.now()/300000);
+    localStorage.setItem('predLock5m',JSON.stringify({...predictionLock,slot}));
+  }catch(e){}
+}
+function loadPredictionLock(){
+  try{
+    const d=JSON.parse(localStorage.getItem('predLock5m'));
+    if(!d||!d.locked)return false;
+    const currentSlot=Math.floor(Date.now()/300000);
+    if(d.slot!==currentSlot)return false; // Different slot, don't restore
+    predictionLock=d;
+    console.log('🔒 Restored locked prediction: '+(d.direction?'YES ↑':'NO ↓')+' from slot '+d.slot);
+    return true;
+  }catch(e){return false}
+}
 function resetPredictionLock(){
   predictionLock={locked:false,direction:null,lockPrice:null,lockTime:null,lockPtb:null,overrideThreshold:100};
   ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null,prices:[],firstPrice:null};
+  try{localStorage.removeItem('predLock5m');localStorage.removeItem('currentPred5m')}catch(e){}
 }
 
 // Track how long price stays above/below PTB within a slot
@@ -1180,7 +1198,7 @@ if(jp.length>=21){
 if(orderBookData.bidTotal>0){
   const imb=orderBookData.nearImbalance||orderBookData.imbalance;
   score+=imb*2;
-  sigs.push({name:'Orderbook',signal:(imb>0?'BID':'ASK')+' heavy '+(imb*100).toFixed(0)+'%',strength:Math.abs(imb)});
+  sigs.push({name:'Binance Book',signal:(imb>0?'BID':'ASK')+' heavy '+(imb*100).toFixed(0)+'%',strength:Math.abs(imb)});
 }
 
 // 6. TRADE FLOW
@@ -1190,33 +1208,81 @@ if(tradeFlowData.buyVolume>0){
   sigs.push({name:'Trade Flow',signal:(tradeFlowData.buyRatio*100).toFixed(0)+'% buyers',strength:Math.abs(bias)});
 }
 
-// 7. POLYMARKET ODDS
+// 7. POLYMARKET ODDS — boosted weight, crowd knows best
 const polyUp=(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000)?polymarketOdds.upPrice:null;
 if(polyUp&&Math.abs(polyUp-0.5)>0.03){
-  score+=(polyUp-0.5)*4;
-  sigs.push({name:'Polymarket',signal:Math.round(polyUp*100)+'¢ UP',strength:Math.abs(polyUp-0.5)*2});
+  // Weight by how extreme the odds are and how fresh they are
+  const freshness=Math.max(0,1-(Date.now()-polymarketOdds.lastFetch)/60000);
+  const oddsWeight=6*freshness; // up from 4, scaled by freshness
+  score+=(polyUp-0.5)*oddsWeight;
+  // Also factor in if odds are MOVING (momentum in the market)
+  if(polymarketOdds.prevUpPrice&&Math.abs(polyUp-polymarketOdds.prevUpPrice)>0.02){
+    const oddsMomentum=polyUp-polymarketOdds.prevUpPrice;
+    score+=oddsMomentum*4;
+    sigs.push({name:'Polymarket Odds',signal:Math.round(polyUp*100)+'¢ UP ('+(oddsMomentum>0?'↑':'↓')+'moving)',strength:Math.abs((polyUp-0.5)*oddsWeight)});
+  }else{
+    sigs.push({name:'Polymarket Odds',signal:Math.round(polyUp*100)+'¢ UP',strength:Math.abs((polyUp-0.5)*oddsWeight)});
+  }
 }
 
-// 8. PRICE DIRECTION
-if(jp.length>=5){
-  const recent=jp.slice(-5);
-  const dir=(recent[4]-recent[0]);
-  score+=dir>0?0.5:-0.5;
-  sigs.push({name:'Direction',signal:dir>0?'MOVING UP':'MOVING DOWN',strength:0.5});
+// 8. POLYMARKET CLOB ORDERBOOK IMBALANCE — real money bids on the market itself
+if(orderbookData.lastUpdate&&(Date.now()-orderbookData.lastUpdate)<30000&&Math.abs(orderbookData.imbalance)>0.05){
+  const clobWeight=3; // Real $ depth in the actual prediction market
+  score+=orderbookData.imbalance*clobWeight;
+  sigs.push({name:'CLOB Depth',signal:(orderbookData.imbalance>0?'UP bids':'DOWN bids')+' heavy '+(orderbookData.imbalance*100).toFixed(0)+'%',strength:Math.abs(orderbookData.imbalance)*clobWeight});
 }
 
-// 9. STREAK FADE — 3+ same direction candles, lean opposite (only when gap is small)
+// 9. WHALE TRADES — follow the top trader
+if(whaleBet.direction&&whaleBet.lastFetch&&(Date.now()-whaleBet.lastFetch)<120000){
+  const whaleIsUp=whaleBet.direction==='YES'||whaleBet.direction==='UP';
+  // Weight by their win rate (default 0.5 if unknown)
+  const whaleEdge=Math.max(0,(whaleBet.winRate||0.5)-0.5)*2; // 0 if 50%, 1 if 100%
+  const whaleWeight=1.5+whaleEdge*3; // 1.5 base, up to 4.5 for elite traders
+  const whaleScore=whaleIsUp?whaleWeight:-whaleWeight;
+  score+=whaleScore;
+  const wr=whaleBet.winRate?(whaleBet.winRate*100).toFixed(0)+'% WR':'unknown WR';
+  sigs.push({name:'Top Trader'+(whaleBet.topTrader?' ('+whaleBet.topTrader.slice(0,6)+'...)':''),signal:(whaleIsUp?'BET YES ↑':'BET NO ↓')+' · '+wr,strength:Math.abs(whaleScore)});
+}
+
+// 10. RECENCY-WEIGHTED PRICE DIRECTION — recent ticks matter exponentially more
+if(jp.length>=8){
+  // Exponential weighting: most recent tick = weight 1.0, oldest = ~0.1
+  let weightedDir=0,totalW=0;
+  const lookback=Math.min(8,jp.length-1);
+  for(let i=0;i<lookback;i++){
+    const w=Math.pow(0.75,i); // decay factor
+    const tickDir=jp[jp.length-1-i]-jp[jp.length-2-i];
+    weightedDir+=tickDir*w;
+    totalW+=w;
+  }
+  const normDir=weightedDir/totalW;
+  const dirScore=normDir>0?0.7:-0.7;
+  score+=dirScore;
+  sigs.push({name:'Price Momentum',signal:normDir>0?'ACCELERATING UP':'ACCELERATING DOWN',strength:Math.abs(dirScore)});
+}
+
+// 11. STREAK FADE — 3+ same direction candles, lean opposite (any gap size)
 if(chainlinkCandles.length>=3){
   const last=chainlinkCandles.slice(-6);
   let ups=0,downs=0;
   last.forEach(c=>{if(c.close>c.open)ups++;else downs++});
   const streak=Math.max(ups,downs);
   const streakDir=ups>downs;
-  if(streak>=3&&Math.abs(diff)<20){
-    const fadeScore=streakDir?-0.8*reversionBoost:0.8*reversionBoost;
+  if(streak>=3){
+    // Scale fade strength by streak length and session
+    const fadeStrength=(0.5+(streak-3)*0.2)*reversionBoost;
+    const fadeScore=streakDir?-fadeStrength:fadeStrength;
     score+=fadeScore;
     sigs.push({name:'Streak Fade',signal:streak+'x '+(streakDir?'UP→fade DOWN':'DOWN→fade UP'),strength:Math.abs(fadeScore)});
   }
+}
+
+// 12. RECENT ACCURACY CONTRARIAN CHECK — if we're in a losing streak, consider flipping
+const recentAcc=getRecentAccuracy(6);
+if(recentAcc!==null&&recentAcc<0.35&&recentResults.length>=5){
+  // We've been wrong >65% of the time recently — flip signal has slight weight
+  score*=-0.4; // Dampen and reverse current score
+  sigs.push({name:'Contrarian Mode',signal:'Accuracy '+Math.round(recentAcc*100)+'% → flip bias',strength:1.5});
 }
 
 // ═══ DONE. Score decides. No strategy overrides. ═══
@@ -1271,6 +1337,7 @@ if(!predictionLock.locked){
     predictionLock.lockPrice=price;
     predictionLock.lockTime=Date.now();
     predictionLock.lockPtb=ptb;
+    savePredictionLock();
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
     console.log('🔒 LOCKED: '+(finalPrediction?'YES ↑':'NO ↓')+' | Gap: $'+priceDiff.toFixed(2));
@@ -1294,6 +1361,7 @@ if(!predictionLock.locked){
 }
 
 m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};
+try{localStorage.setItem('currentPred5m',JSON.stringify({pred:m.currentPrediction,slot:Math.floor(Date.now()/300000)}))}catch(e){}
 const pb=document.getElementById('predictionDisplay');pb.className=displayWillBeat?'pred pred-up':'pred pred-dn';
 document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(displayWillBeat?'&#8593; YES':'&#8595; NO')+lockStatus+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(displayWillBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
 document.getElementById('predictionConfidence').textContent='Confidence: '+displayConf+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=displayConf+'%';document.getElementById('confPercent').textContent=displayConf+'%';const cf=parseFloat(displayConf);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
@@ -1307,6 +1375,13 @@ function updateCountdown(){const end=getSlotEnd(selectedTimeframe);const tl=end-
 // ═══ ADAPTIVE LEARNING ENGINE ═══
 // Track every signal's accuracy independently and aggressively adjust weights
 let signalMultipliers={}; // Per-signal name multiplier (starts at 1.0)
+let recentResults=[];
+try{const saved=localStorage.getItem('btcRecentResults');if(saved)recentResults=JSON.parse(saved)}catch(e){}
+function getRecentAccuracy(n=10){
+  const recent=recentResults.slice(-n);
+  if(recent.length<3)return null;
+  return recent.filter(r=>r.correct).length/recent.length;
+}
 
 function getSignalMultiplier(name){
   const key=name.replace(/[^a-zA-Z]/g,'').toLowerCase();
@@ -1459,6 +1534,16 @@ async function startPredictions(){if(isRunning)return;isRunning=true;document.ge
 // Load historical candles first
 document.getElementById('status').textContent='Loading 200 historical candles...';
 await loadHistoricalData();
+// Restore locked prediction if same slot
+loadPredictionLock();
+// Also restore currentPrediction for the active market
+try{
+  const saved=JSON.parse(localStorage.getItem('currentPred5m'));
+  if(saved&&saved.slot===Math.floor(Date.now()/300000)){
+    markets[5].currentPrediction=saved.pred;
+    console.log('📌 Restored currentPrediction for slot '+saved.slot);
+  }
+}catch(e){}
 // Set initial slots and PTB for all markets
 const price=latestBtcPrice||priceHistory.length?priceHistory[priceHistory.length-1].price:0;
 const now=new Date();
