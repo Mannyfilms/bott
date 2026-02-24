@@ -454,7 +454,7 @@ function updatePredDisplay(){
     el.className='pred '+(prediction.willBeat?'pred-up':'pred-dn');
     document.getElementById('predValue').innerHTML=
         '<div style="font-size:1.1em">'+(prediction.willBeat?'↑ YES':'↓ NO')+'</div>'+
-        '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?ptb.toFixed(2):'--')+'</div>';
+        '<div style="font-size:.45em;margin-top:4px;color:var(--tx2)">'+(prediction.willBeat?'Will beat':'Won\'t beat')+' $'+(ptb?(ptb+22).toFixed(2):'--')+'</div>';
     document.getElementById('predConf').textContent='Confidence: '+prediction.confidence+'%';
     document.getElementById('confPct').textContent=prediction.confidence+'%';
     document.getElementById('confBar').style.width=prediction.confidence+'%';
@@ -474,7 +474,7 @@ function updateUI(){
     }
 
     if(ptb){
-        document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        document.getElementById('priceToBeat').textContent='$'+(ptb+22).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         document.getElementById('ptbTime').textContent=ptbSetAt?'Set at '+ptbSetAt.toLocaleTimeString():'Set at hour mark';
         const d=btcPrice-ptb,p=(d/ptb*100).toFixed(3);
         document.getElementById('vsComparison').innerHTML=d>0?
