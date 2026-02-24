@@ -514,7 +514,150 @@ function applyLearned(name,baseScore){const sm=getSignalMultiplier(name);return 
 let recentResults=[];
 function getRecentAccuracy(){if(recentResults.length<5)return null;const last=recentResults.slice(-10);return last.filter(r=>r.correct).length/last.length}
 
-async function makePred(prices,volumes,ptb){try{if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};const jp=prices.map(p=>p.price),cur=jp[jp.length-1];let sigs=[];const diff=cur-ptb;const gap=Math.abs(diff);const aboveNow=diff>0;const posData=getPositionBias();const abovePct=posData.abovePct;const avgDiff=posData.avgDiff;const trend=posData.trend;const prediction=abovePct>0.5;const dominance=Math.abs(abovePct-0.5)*2;sigs.push({name:'Price vs PTB',signal:(aboveNow?'+$':'-$')+gap.toFixed(2),strength:Math.min(gap/10,5)});sigs.push({name:'Time Above PTB',signal:Math.round(abovePct*100)+'% of slot',strength:dominance*5});sigs.push({name:'Avg Distance',signal:(avgDiff>0?'+':'')+avgDiff.toFixed(2),strength:Math.min(Math.abs(avgDiff)/10,3)});sigs.push({name:'Trend',signal:trend>0?'Moving UP':'Moving DOWN',strength:Math.min(Math.abs(trend),3)});sigs.push({name:'Current',signal:aboveNow?'ABOVE PTB':'BELOW PTB',strength:gap>20?3:gap>5?2:1});const gapConf=Math.min(gap/50*15,15);const timeConf=dominance*15;const confidence=Math.max(85,Math.min(98,85+gapConf+timeConf)).toFixed(1);let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};try{feat=extractFeat(prices,volumes);const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];mp=await getMP(feat,sf)}catch(e){}const cp2=detectPat(jp);return{willBeat:prediction,confidence:confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat}}catch(e){return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]}}}
+async function makePred(prices,volumes,ptb){
+  // ═══ WHAT THIS PREDICTS ═══
+  // PTB = price snapshotted at the START of this 5-min slot.
+  // We predict: will the CLOSING price of this slot (= first tick of NEXT slot) be ABOVE ptb?
+  // The check happens when the slot flips: checkPrediction(newPrice) where newPrice is the
+  // first tick of the new slot — i.e. this slot's close. That's real and fair.
+  //
+  // IMPORTANT: We do NOT use positionHistory (how much time was spent above/below this slot)
+  // because that's nearly a tautology — if price has been above PTB all slot, it's probably
+  // still above PTB at slot end, so it would always be "correct".
+  // Instead we use technical signals + momentum to forecast direction.
+
+  try{
+    if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
+    const jp=prices.map(p=>p.price);
+    const vols=prices.map(p=>p.volume||1);
+    const cur=jp[jp.length-1];
+    let sigs=[];
+    let bullScore=0,bearScore=0;
+
+    // --- 1. MOMENTUM: where is price going RIGHT NOW? ---
+    const vel=priceVelocity(jp);
+    if(vel){
+      const s=vel.signal;
+      if(s==='ACCELERATING UP'){bullScore+=3;sigs.push({name:'Momentum',signal:'Accel UP ↑↑',strength:3})}
+      else if(s==='DECELERATING UP'){bullScore+=1;sigs.push({name:'Momentum',signal:'Decelerating ↑',strength:1})}
+      else if(s==='ACCELERATING DOWN'){bearScore+=3;sigs.push({name:'Momentum',signal:'Accel DOWN ↓↓',strength:3})}
+      else if(s==='DECELERATING DOWN'){bearScore+=1;sigs.push({name:'Momentum',signal:'Decelerating ↓',strength:1})}
+      else sigs.push({name:'Momentum',signal:'Neutral',strength:0.5});
+    }
+
+    // --- 2. RSI: overbought/oversold ---
+    const rs=rsi(jp);
+    if(rs!==null){
+      if(rs<30){bullScore+=2.5;sigs.push({name:'RSI',signal:'Oversold ('+rs.toFixed(0)+')',strength:2.5})}
+      else if(rs>70){bearScore+=2.5;sigs.push({name:'RSI',signal:'Overbought ('+rs.toFixed(0)+')',strength:2.5})}
+      else if(rs<45){bullScore+=1;sigs.push({name:'RSI',signal:'Low ('+rs.toFixed(0)+')',strength:1})}
+      else if(rs>55){bearScore+=1;sigs.push({name:'RSI',signal:'High ('+rs.toFixed(0)+')',strength:1})}
+      else sigs.push({name:'RSI',signal:'Neutral ('+rs.toFixed(0)+')',strength:0});
+    }
+
+    // --- 3. EMA 9/21 crossover & position ---
+    const ec=emaCrossover(jp);
+    if(ec){
+      if(ec.crossUp){bullScore+=3;sigs.push({name:'EMA Cross',signal:'Bullish cross ↑',strength:3})}
+      else if(ec.crossDown){bearScore+=3;sigs.push({name:'EMA Cross',signal:'Bearish cross ↓',strength:3})}
+      else if(ec.bullish){bullScore+=1.5;sigs.push({name:'EMA Trend',signal:'Above EMA21 ↑',strength:1.5})}
+      else{bearScore+=1.5;sigs.push({name:'EMA Trend',signal:'Below EMA21 ↓',strength:1.5})}
+    }
+
+    // --- 4. MACD ---
+    const mc2=macd(jp);
+    if(mc2){
+      if(mc2.signal==='BULLISH'){bullScore+=1.5;sigs.push({name:'MACD',signal:'Bullish',strength:1.5})}
+      else{bearScore+=1.5;sigs.push({name:'MACD',signal:'Bearish',strength:1.5})}
+    }
+
+    // --- 5. Bollinger Bands position ---
+    const b=bb(jp);
+    if(b){
+      const pos=(cur-b.lower)/(b.upper-b.lower);
+      if(pos<0.15){bullScore+=2;sigs.push({name:'Bollinger',signal:'Near lower band',strength:2})}
+      else if(pos>0.85){bearScore+=2;sigs.push({name:'Bollinger',signal:'Near upper band',strength:2})}
+      else sigs.push({name:'Bollinger',signal:'Mid band ('+Math.round(pos*100)+'%)',strength:0.5});
+    }
+
+    // --- 6. Stochastic RSI ---
+    const sr=stochRsi(jp);
+    if(sr){
+      if(sr.signal==='OVERSOLD'){bullScore+=2;sigs.push({name:'StochRSI',signal:'Oversold ('+sr.k.toFixed(0)+')',strength:2})}
+      else if(sr.signal==='OVERBOUGHT'){bearScore+=2;sigs.push({name:'StochRSI',signal:'Overbought ('+sr.k.toFixed(0)+')',strength:2})}
+      else sigs.push({name:'StochRSI',signal:sr.signal+' ('+sr.k.toFixed(0)+')',strength:0.5});
+    }
+
+    // --- 7. Volume trend: rising volume confirms direction ---
+    if(vols.length>=10){
+      const recentVol=vols.slice(-5).reduce((a,b)=>a+b,0)/5;
+      const olderVol=vols.slice(-15,-5).reduce((a,b)=>a+b,0)/10;
+      const priceUp=jp[jp.length-1]>jp[jp.length-5];
+      if(recentVol>olderVol*1.3){
+        if(priceUp){bullScore+=2;sigs.push({name:'Volume',signal:'Rising + Up ↑',strength:2})}
+        else{bearScore+=2;sigs.push({name:'Volume',signal:'Rising + Down ↓',strength:2})}
+      }else sigs.push({name:'Volume',signal:'Normal',strength:0.5});
+    }
+
+    // --- 8. Order book imbalance (real bids vs asks) ---
+    if(orderBookData&&orderBookData.nearImbalance!==undefined){
+      const ob=orderBookData.nearImbalance;
+      if(ob>0.15){bullScore+=2;sigs.push({name:'Order Book',signal:'Strong bids (+'+ob.toFixed(2)+')',strength:2})}
+      else if(ob<-0.15){bearScore+=2;sigs.push({name:'Order Book',signal:'Strong asks ('+ob.toFixed(2)+')',strength:2})}
+      else sigs.push({name:'Order Book',signal:'Balanced ('+ob.toFixed(2)+')',strength:0.5});
+    }
+
+    // --- 9. Trade flow (market orders) ---
+    if(tradeFlowData&&tradeFlowData.buyRatio){
+      const br=tradeFlowData.buyRatio;
+      if(br>0.6){bullScore+=1.5;sigs.push({name:'Trade Flow',signal:'Buy pressure ('+(br*100).toFixed(0)+'%)',strength:1.5})}
+      else if(br<0.4){bearScore+=1.5;sigs.push({name:'Trade Flow',signal:'Sell pressure ('+(br*100).toFixed(0)+'%)',strength:1.5})}
+      else sigs.push({name:'Trade Flow',signal:'Neutral ('+(br*100).toFixed(0)+'%)',strength:0.5});
+    }
+
+    // --- 10. Fear & Greed (contrarian) ---
+    const fg=externalData.fearGreed;
+    if(fg<25){bullScore+=1.5;sigs.push({name:'Fear&Greed',signal:'Extreme Fear → buy ('+fg+')',strength:1.5})}
+    else if(fg>80){bearScore+=1.5;sigs.push({name:'Fear&Greed',signal:'Extreme Greed → sell ('+fg+')',strength:1.5})}
+    else sigs.push({name:'Fear&Greed',signal:fg+' ('+externalData.sentiment+')',strength:0.5});
+
+    // --- 11. Candlestick pattern ---
+    const candles=priceHistory.slice(-5).map(p=>({open:p.open||p.price,high:p.high||p.price,low:p.low||p.price,close:p.price}));
+    const pat=candlePatterns(candles);
+    if(pat){
+      if(pat.signal==='BULLISH'){bullScore+=pat.strength;sigs.push({name:'Pattern',signal:pat.pattern+' ↑',strength:pat.strength})}
+      else if(pat.signal==='BEARISH'){bearScore+=pat.strength;sigs.push({name:'Pattern',signal:pat.pattern+' ↓',strength:pat.strength})}
+      else sigs.push({name:'Pattern',signal:pat.pattern+' (reversal)',strength:1});
+    }
+
+    // --- 12. Price position vs PTB right now (directional bias only) ---
+    const diff=cur-ptb;
+    const gap=Math.abs(diff);
+    // Use as a mild signal — being well above PTB is bullish momentum, being far below is bearish
+    // But weight it LOW so it doesn't dominate (it's not very predictive of next-slot outcome)
+    if(diff>100){bullScore+=0.8;sigs.push({name:'vs PTB',signal:'+$'+gap.toFixed(0)+' above',strength:0.8})}
+    else if(diff<-100){bearScore+=0.8;sigs.push({name:'vs PTB',signal:'-$'+gap.toFixed(0)+' below',strength:0.8})}
+    else sigs.push({name:'vs PTB',signal:(diff>0?'+':'')+diff.toFixed(0),strength:0.3});
+
+    // --- FINAL SCORE ---
+    const total=bullScore+bearScore||1;
+    const bullPct=bullScore/total;
+    const prediction=bullPct>0.5;
+    // Confidence reflects how decisive the signal split is
+    const margin=Math.abs(bullPct-0.5)*2; // 0=tie, 1=unanimous
+    const confidence=Math.max(50,Math.min(92,55+margin*37)).toFixed(1);
+
+    let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
+    try{feat=extractFeat(prices,volumes);const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];mp=await getMP(feat,sf)}catch(e){}
+    const cp2=detectPat(jp);
+
+    console.log('📊 Bull:'+bullScore.toFixed(1)+' Bear:'+bearScore.toFixed(1)+' → '+(prediction?'YES ↑':'NO ↓')+' conf:'+confidence+'%');
+    return{willBeat:prediction,confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat,bullScore,bearScore};
+  }catch(e){
+    console.error('makePred error:',e);
+    return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]};
+  }
+}
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){
@@ -533,8 +676,43 @@ if(priceHistory.length>=5&&ptb){let pred;try{pred=await makePred(priceHistory,vo
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
-const lockAfter=Math.max(10,Math.min(120,120-Math.min(priceDiff,100)*1.1));
-const shouldLock=timeInSlot>=lockAfter;
+
+// ═══ DYNAMIC LOCK TIMING ═══
+// Far from PTB ($150+) → lock fast (~15s), clear signal
+// Close to PTB ($0-30)  → wait up to 120s (2 min), gather more data
+// Smooth curve between the two extremes
+// Also require minimum 10s before ANY lock (avoid locking on very first tick)
+const MIN_LOCK_WAIT = 10;   // never lock before 10s
+const MAX_LOCK_WAIT = 120;  // never wait more than 2 minutes (120s)
+const CLOSE_THRESHOLD = 30; // within $30 = "too close to call"
+const CLEAR_THRESHOLD = 150; // $150+ away = "easy to call"
+
+let lockAfter;
+if(priceDiff >= CLEAR_THRESHOLD){
+  // Price is far away — lock early, no need to wait
+  lockAfter = MIN_LOCK_WAIT;
+} else if(priceDiff <= CLOSE_THRESHOLD){
+  // Price is very close to PTB — wait the full 2 minutes for clarity
+  lockAfter = MAX_LOCK_WAIT;
+} else {
+  // Smooth interpolation between CLOSE and CLEAR thresholds
+  // As priceDiff grows from CLOSE_THRESHOLD → CLEAR_THRESHOLD, lockAfter shrinks from MAX → MIN
+  const t = (priceDiff - CLOSE_THRESHOLD) / (CLEAR_THRESHOLD - CLOSE_THRESHOLD); // 0.0 → 1.0
+  lockAfter = MAX_LOCK_WAIT - t * (MAX_LOCK_WAIT - MIN_LOCK_WAIT);
+}
+
+// Also factor in signal confidence: if signals are very decisive (margin > 0.4), lock sooner
+const signalMargin = Math.abs((pred.bullScore||0) - (pred.bearScore||0)) / Math.max((pred.bullScore||0) + (pred.bearScore||0), 1);
+if(signalMargin > 0.5 && timeInSlot > MIN_LOCK_WAIT){
+  // Strong signal consensus → can lock up to 30s sooner
+  lockAfter = Math.max(MIN_LOCK_WAIT, lockAfter - signalMargin * 30);
+}
+
+const shouldLock = timeInSlot >= lockAfter;
+const secsToLock = Math.max(0, Math.ceil(lockAfter - timeInSlot));
+
+// Classify how "close to call" this is for display
+const callDifficulty = priceDiff >= CLEAR_THRESHOLD ? 'CLEAR' : priceDiff <= CLOSE_THRESHOLD ? 'TOO CLOSE' : 'MARGINAL';
 
 let finalPrediction=pred.willBeat;
 let strategy='ABOVE '+Math.round(getPositionBias().abovePct*100)+'%';
@@ -542,8 +720,53 @@ let clampedConf=pred.confidence;
 let displayWillBeat=finalPrediction,displayConf=clampedConf,lockStatus='';
 
 if(!predictionLock.locked){
-  if(shouldLock){predictionLock.locked=true;predictionLock.direction=finalPrediction;predictionLock.lockPrice=price;predictionLock.lockTime=Date.now();predictionLock.lockPtb=ptb;savePredictionLock();displayWillBeat=finalPrediction;lockStatus=' 🔒 LOCKED'}
-  else{lockStatus='analyzing';const secsToLock=Math.ceil(lockAfter-timeInSlot);m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Watching... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ +$':'↓ -$')+priceDiff.toFixed(0)+' from PTB · Above '+Math.round(getPositionBias().abovePct*100)+'% of time</div>';document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓');document.getElementById('predictionDetails').textContent='Gap $'+priceDiff.toFixed(0)+' → locks in ~'+secsToLock+'s';document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width='0%';document.getElementById('confPercent').textContent='--';displaySignals(pred.signals);updateCountdown();return}
+  if(shouldLock){
+    predictionLock.locked=true;
+    predictionLock.direction=finalPrediction;
+    predictionLock.lockPrice=price;
+    predictionLock.lockTime=Date.now();
+    predictionLock.lockPtb=ptb;
+    savePredictionLock();
+    displayWillBeat=finalPrediction;
+    const lockReason=callDifficulty==='CLEAR'?'🔒 LOCKED (clear gap $'+priceDiff.toFixed(0)+')':callDifficulty==='TOO CLOSE'?'🔒 LOCKED (2min reached)':'🔒 LOCKED ($'+priceDiff.toFixed(0)+')';
+    lockStatus=' '+lockReason;
+    console.log('🔒 LOCK ['+callDifficulty+'] at '+timeInSlot.toFixed(0)+'s | gap $'+priceDiff.toFixed(0)+' | signal margin '+signalMargin.toFixed(2)+' → '+(finalPrediction?'YES ↑':'NO ↓'));
+  }
+  else{
+    lockStatus='analyzing';
+    m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};
+    const pb=document.getElementById('predictionDisplay');
+    pb.className='pred';
+    pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
+    // Determine color hint based on current lean
+    const leanColor=finalPrediction?'var(--up)':'var(--dn)';
+    const leanArrow=finalPrediction?'↑':'↓';
+    // Difficulty label styling
+    const diffColor=callDifficulty==='CLEAR'?'var(--up)':callDifficulty==='TOO CLOSE'?'var(--dn)':'#eab308';
+    document.getElementById('predictionValue').innerHTML=
+      '<div style="font-size:1em;color:var(--tx2)">⏳ '+callDifficulty+' — locking in <span style="color:var(--btc);font-family:JetBrains Mono,monospace">'+secsToLock+'s</span></div>'
+      +'<div style="font-size:.58em;margin-top:6px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'
+      +'<span style="color:'+leanColor+'">Leaning '+leanArrow+' '+(finalPrediction?'YES':'NO')+'</span>'
+      +'<span style="color:var(--tx3)">|</span>'
+      +'<span style="color:'+diffColor+'">$'+priceDiff.toFixed(0)+' from PTB</span>'
+      +'<span style="color:var(--tx3)">|</span>'
+      +'<span style="color:var(--tx3)">Bull '+((pred.bullScore||0).toFixed(1))+' Bear '+((pred.bearScore||0).toFixed(1))+'</span>'
+      +'</div>';
+    document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓')+' (not locked)';
+    document.getElementById('predictionDetails').textContent=
+      callDifficulty==='CLEAR'?'Large gap → early lock in ~'+secsToLock+'s':
+      callDifficulty==='TOO CLOSE'?'Price near PTB → watching up to 2 min':
+      'Marginal gap → lock in ~'+secsToLock+'s';
+    document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
+    // Show a partial progress bar representing how far into the wait period we are
+    const waitProgress=Math.min(100,(timeInSlot/lockAfter)*100);
+    document.getElementById('confidenceMeter').style.width=waitProgress+'%';
+    document.getElementById('confidenceMeter').style.background='linear-gradient(90deg,#636bff,#818cf8)';
+    document.getElementById('confPercent').textContent='Gathering data... '+Math.round(waitProgress)+'%';
+    displaySignals(pred.signals);
+    updateCountdown();
+    return;
+  }
 }else{displayWillBeat=predictionLock.direction;lockStatus=' 🔒 LOCKED'}
 
 m.currentPrediction={willBeat:displayWillBeat,confidence:displayConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};
