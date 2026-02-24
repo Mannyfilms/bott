@@ -477,12 +477,37 @@ async function makePred(prices,volumes,ptb){
   const acc=getRecentAccuracy(6);
   if(acc!==null&&acc<0.35&&recentResults.length>=5){score*=-.4;sigs.push({name:'Contrarian Mode',signal:'Acc '+Math.round(acc*100)+'% → flip',strength:1.5})}
 
-  const willBeat=score>0;
-  const raw=Math.min(Math.abs(score)/(pWeight+8)*100,50);
-  const confidence=(Math.max(85,Math.min(50+raw,98))).toFixed(1);
+  // ── ML ENSEMBLE — actually vote into the score ──
   const feat=extractFeat(prices,volumes);
   const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];
   const mp=await getMP(feat,sf);
+
+  // Each model outputs 0–1 (>0.5 = bullish). Convert to -1..+1 and weight.
+  // Only count models that have a real opinion (deviate meaningfully from 0.5).
+  // Untrained/random models cluster near 0.5 and get low weight automatically.
+  const mlVotes=[];
+  [['LSTM',mp.lstm,2.5],['Technical',mp.technical,2],['Hybrid',mp.hybrid,2]].forEach(([name,v,baseW])=>{
+    const conviction=Math.abs(v-0.5)*2; // 0=no opinion, 1=certain
+    if(conviction<0.1)return; // ignore near-random outputs
+    const w=baseW*conviction; // weight scales with how strongly it believes
+    const mlScore=(v-0.5)*2*w; // -w..+w
+    score+=mlScore;
+    sigs.push({
+      name:'ML: '+name,
+      signal:v>0.5?'BULLISH ▲ '+(v*100).toFixed(0)+'%':'BEARISH ▼ '+(v*100).toFixed(0)+'%',
+      strength:Math.abs(mlScore)
+    });
+    mlVotes.push(v>0.5?1:-1);
+  });
+
+  // Consensus bonus: if all 3 models agree strongly, add extra push
+  if(mlVotes.length===3&&mlVotes.every(v=>v===1)){score+=1.5;sigs.push({name:'ML Consensus',signal:'ALL 3 BULLISH ▲',strength:1.5})}
+  else if(mlVotes.length===3&&mlVotes.every(v=>v===-1)){score-=1.5;sigs.push({name:'ML Consensus',signal:'ALL 3 BEARISH ▼',strength:1.5})}
+
+  const willBeat=score>0;
+  const totalWeight=pWeight+8+6; // account for ML weight in normalisation
+  const raw=Math.min(Math.abs(score)/totalWeight*100,50);
+  const confidence=(Math.max(85,Math.min(50+raw,98))).toFixed(1);
   return{willBeat,confidence,signals:sigs,modelPredictions:mp,pattern:detectPat(jp),features:feat};
 }
 
