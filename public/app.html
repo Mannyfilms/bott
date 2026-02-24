@@ -388,7 +388,7 @@ function getSlot(tf,date){const d=date||new Date();const totalMins=d.getHours()*
 function getSlotEnd(tf,date){const d=date||new Date();const totalMins=d.getHours()*60+d.getMinutes();const slotMins=Math.floor(totalMins/tf)*tf;const nextSlotMins=slotMins+tf;const end=new Date(d);end.setHours(Math.floor(nextSlotMins/60),nextSlotMins%60,0,0);if(nextSlotMins>=1440){end.setDate(end.getDate()+1);end.setHours(0,0,0,0)}return end}
 function getActiveMarket(){return markets[selectedTimeframe]}
 
-function setTimeframe(tf){selectedTimeframe=tf;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.remove('tf-active'));document.getElementById('tf'+tf).classList.add('tf-active');const labels={5:'5-minute',15:'15-minute',60:'1-hour'};document.getElementById('ptbLabel').textContent='Set at '+labels[tf]+' mark (Chainlink)';const m=getActiveMarket();if(m.priceToBeat){document.getElementById('priceToBeat').textContent='$'+m.priceToBeat.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});if(latestBtcPrice){const d=latestBtcPrice-m.priceToBeat,p=(d/m.priceToBeat*100).toFixed(3);document.getElementById('vsComparison').innerHTML=d>0?'<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':'<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>'}}else{document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}if(isRunning)updateCountdown()}
+function setTimeframe(tf){selectedTimeframe=tf;document.querySelectorAll('.tf-btn').forEach(b=>b.classList.remove('tf-active'));document.getElementById('tf'+tf).classList.add('tf-active');const labels={5:'5-minute',15:'15-minute',60:'1-hour'};document.getElementById('ptbLabel').textContent='Set at '+labels[tf]+' mark';const m=getActiveMarket();if(m.priceToBeat){document.getElementById('priceToBeat').textContent='$'+m.priceToBeat.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});if(latestBtcPrice){const d=latestBtcPrice-m.priceToBeat,p=(d/m.priceToBeat*100).toFixed(3);document.getElementById('vsComparison').innerHTML=d>0?'<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':'<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>'}}else{document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}if(isRunning)updateCountdown()}
 
 // ═══ SAVE/LOAD ═══
 function saveProgress(){try{const data={predictionHistory:predictionHistory.slice(0,50),trainingData:trainingData.slice(-100),stats,signalPerformance,signalWeights,signalMultipliers,strategyStats:window.strategyStats||{},lastSaved:Date.now()};localStorage.setItem('btcPred',JSON.stringify(data))}catch(e){}}
@@ -399,118 +399,20 @@ function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-di
 function toggleTheme(){}
 let btcWs=null,latestBtcPrice=null;
 let polyWs=null,latestChainlinkPrice=null;
-// Track last Chainlink tick time so we know if the feed is live
-let lastChainlinkTime=0;
+let lastChainlinkSlot=null;
 let chainlinkCandles=[];
 let currentChainlinkCandle=null;
 function getChainlinkSlot(ts){return Math.floor(ts/300000)}
-function processChainlinkTick(price,timestamp){
-  lastChainlinkTime=Date.now();
-  const slot=getChainlinkSlot(timestamp);
-  if(!currentChainlinkCandle||currentChainlinkCandle.slot!==slot){
-    if(currentChainlinkCandle&&currentChainlinkCandle.ticks>0){
-      chainlinkCandles.push({time:currentChainlinkCandle.slot*300000,open:currentChainlinkCandle.open,high:currentChainlinkCandle.high,low:currentChainlinkCandle.low,close:currentChainlinkCandle.close,ticks:currentChainlinkCandle.ticks});
-      if(chainlinkCandles.length>100)chainlinkCandles.shift();
-    }
-    currentChainlinkCandle={slot,open:price,high:price,low:price,close:price,ticks:1};
-  }else{
-    currentChainlinkCandle.high=Math.max(currentChainlinkCandle.high,price);
-    currentChainlinkCandle.low=Math.min(currentChainlinkCandle.low,price);
-    currentChainlinkCandle.close=price;
-    currentChainlinkCandle.ticks++;
-  }
-}
+function processChainlinkTick(price,timestamp){const slot=getChainlinkSlot(timestamp);if(!currentChainlinkCandle||currentChainlinkCandle.slot!==slot){if(currentChainlinkCandle&&currentChainlinkCandle.ticks>0){chainlinkCandles.push({time:currentChainlinkCandle.slot*300000,open:currentChainlinkCandle.open,high:currentChainlinkCandle.high,low:currentChainlinkCandle.low,close:currentChainlinkCandle.close,ticks:currentChainlinkCandle.ticks});if(chainlinkCandles.length>100)chainlinkCandles.shift()}currentChainlinkCandle={slot,open:price,high:price,low:price,close:price,ticks:1}}else{currentChainlinkCandle.high=Math.max(currentChainlinkCandle.high,price);currentChainlinkCandle.low=Math.min(currentChainlinkCandle.low,price);currentChainlinkCandle.close=price;currentChainlinkCandle.ticks++}}
 
-// ═══ PTB: CHAINLINK-ONLY ═══
-// PTB must come from the Chainlink feed exclusively (Polymarket settles on Chainlink)
-// Never fall back to Binance for PTB — if Chainlink isn't available, wait for it
-function isChainlinkLive(){
-  return lastChainlinkTime>0&&(Date.now()-lastChainlinkTime)<30000; // live if ticked within 30s
-}
-
-function savePtb(price,source='chainlink'){
-  const slot=Math.floor(Date.now()/300000);
-  localStorage.setItem('ptb',JSON.stringify({price,slot,source,ts:Date.now()}));
-  fetch('/api/ptb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,slot,source})}).catch(()=>{});
-}
-
-async function loadPtb(){
-  const currentSlot=Math.floor(Date.now()/300000);
-  // Only accept cached PTB if it was from Chainlink
-  try{
-    const d=JSON.parse(localStorage.getItem('ptb'));
-    if(d&&d.slot===currentSlot&&d.price>50000&&d.price<200000&&d.source==='chainlink'){
-      markets[5].priceToBeat=d.price;
-      console.log('📌 PTB loaded from cache (Chainlink): $'+d.price.toFixed(2));
-      return;
-    }
-  }catch(e){}
-  try{
-    const r=await fetch('/api/ptb');const d=await r.json();
-    if(d.price&&d.price>50000&&d.price<200000&&d.slot===currentSlot){
-      markets[5].priceToBeat=d.price;
-      localStorage.setItem('ptb',JSON.stringify({price:d.price,slot:currentSlot,source:'chainlink',ts:Date.now()}));
-      console.log('📌 PTB loaded from server: $'+d.price.toFixed(2));
-    }
-  }catch(e){}
-}
+function savePtb(price){const slot=Math.floor(Date.now()/300000);localStorage.setItem('ptb',JSON.stringify({price,slot}));fetch('/api/ptb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({price,slot})}).catch(()=>{})}
+async function loadPtb(){const currentSlot=Math.floor(Date.now()/300000);try{const d=JSON.parse(localStorage.getItem('ptb'));if(d&&d.slot===currentSlot&&d.price>50000&&d.price<200000){markets[5].priceToBeat=d.price;return}}catch(e){}try{const r=await fetch('/api/ptb');const d=await r.json();if(d.price&&d.price>50000&&d.price<200000){markets[5].priceToBeat=d.price;localStorage.setItem('ptb',JSON.stringify({price:d.price,slot:currentSlot}))}}catch(e){}}
 loadPtb();
-
-function startPtbTimer(){
-  const now=Date.now();
-  const slotMs=300000;
-  const nextBoundary=Math.ceil(now/slotMs)*slotMs;
-  const delay=nextBoundary-now;
-
-  async function captureChainlinkPtb(){
-    // CHAINLINK ONLY — wait up to 10s for a fresh Chainlink tick at the slot boundary
-    // Polymarket settles on Chainlink, so this must match exactly
-    return new Promise(resolve=>{
-      let attempts=0;
-      const maxAttempts=20; // 20 × 500ms = 10s max wait
-      const check=setInterval(()=>{
-        attempts++;
-        const fresh=Date.now()-lastChainlinkTime<2000; // tick within last 2s = fresh
-        if(latestChainlinkPrice&&fresh){
-          clearInterval(check);
-          const price=latestChainlinkPrice;
-          markets[5].priceToBeat=price;
-          savePtb(price,'chainlink');
-          console.log('🔗 PTB SET (Chainlink): $'+price.toFixed(2)+' at slot boundary ('+attempts+' attempts, '+lastChainlinkTime+')');
-          document.getElementById('ptbLabel').textContent='Set at '+new Date().toLocaleTimeString()+' (Chainlink)';
-          resolve(price);
-        } else if(attempts>=maxAttempts){
-          clearInterval(check);
-          // Chainlink didn't arrive in time — log warning, do NOT use Binance
-          console.warn('⚠️ Chainlink price not fresh at slot boundary after 10s — PTB not set. Waiting for next Chainlink tick...');
-          // Fall back: use the most recent Chainlink price we have (even if slightly stale)
-          // This is still better than Binance since it's from the same oracle
-          if(latestChainlinkPrice){
-            markets[5].priceToBeat=latestChainlinkPrice;
-            savePtb(latestChainlinkPrice,'chainlink-stale');
-            console.log('🔗 PTB SET (Chainlink stale): $'+latestChainlinkPrice.toFixed(2));
-            resolve(latestChainlinkPrice);
-          } else {
-            console.error('❌ No Chainlink price available — PTB cannot be set');
-            resolve(null);
-          }
-        }
-      },500);
-    });
-  }
-
-  setTimeout(async()=>{
-    await captureChainlinkPtb();
-    setInterval(captureChainlinkPtb, slotMs);
-  }, delay);
-
-  console.log('⏱️ PTB timer set — next capture in '+(delay/1000).toFixed(0)+'s');
-}
+function startPtbTimer(){const now=Date.now();const slotMs=300000;const nextBoundary=Math.ceil(now/slotMs)*slotMs;const delay=nextBoundary-now;setTimeout(()=>{const ptbPrice=latestChainlinkPrice||latestBtcPrice;if(ptbPrice&&markets[5]){markets[5].priceToBeat=ptbPrice;savePtb(ptbPrice)}setInterval(()=>{const p=latestChainlinkPrice||latestBtcPrice;if(p&&markets[5]){markets[5].priceToBeat=p;savePtb(p)}},slotMs)},delay)}
 startPtbTimer();
 
 function connectPolyWs(){try{polyWs=new WebSocket('wss://ws-live-data.polymarket.com');polyWs.onopen=function(){polyWs.send(JSON.stringify({action:'subscribe',subscriptions:[{topic:'crypto_prices_chainlink',type:'*',filters:'{"symbol":"btc/usd"}'}]}));polyWs.send(JSON.stringify({action:'subscribe',subscriptions:[{topic:'crypto_prices',type:'update',filters:'btcusdt'}]}))};polyWs.onmessage=function(e){try{const d=JSON.parse(e.data);if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){latestChainlinkPrice=d.payload.value;latestBtcPrice=d.payload.value;const srcTs=d.payload.timestamp||Date.now();processChainlinkTick(d.payload.value,srcTs)}else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){if(!latestChainlinkPrice)latestBtcPrice=d.payload.value}}catch(ex){}};let pingInterval=setInterval(()=>{if(polyWs.readyState===1)polyWs.send('PING');else clearInterval(pingInterval)},5000);polyWs.onclose=function(){clearInterval(pingInterval);setTimeout(connectPolyWs,3000)};polyWs.onerror=function(){polyWs.close()}}catch(e){setTimeout(connectPolyWs,5000)}}
-// Binance WS: display price only — NEVER used for PTB (Polymarket settles on Chainlink)
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);const p=parseFloat(d.p);if(!latestChainlinkPrice)latestBtcPrice=p;/* display only — not used for PTB */};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();connectBtcWs();
 
 let polymarketOdds={upPrice:null,downPrice:null,lastFetch:0,prevUpPrice:null,slotStartUpPrice:null,lastSlot:0};
@@ -963,7 +865,7 @@ function updateSignalPerformance(){const el=document.getElementById('signalPerfo
 
 // ═══ MAIN ═══
 async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),now=new Date;const last=priceHistory.length?priceHistory[priceHistory.length-1]:null;priceHistory.push({price,volume:vl,timestamp:now.getTime(),open:last?last.price:price,high:last?Math.max(last.price,price):price,low:last?Math.min(last.price,price):price,close:price});if(priceHistory.length>500)priceHistory.shift();
-[5,15,60].forEach(tf=>{const m=markets[tf];const currentSlot=getSlot(tf,now);if(m.currentSlot!==null&&m.currentSlot!==currentSlot){if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);m.currentPrediction=null;if(tf===selectedTimeframe)resetPositionHistory();if(tf===selectedTimeframe)resetPredictionLock()}if(m.currentSlot!==currentSlot){m.currentSlot=currentSlot;if(tf!==5)m.priceToBeat=latestChainlinkPrice||price/* 15m/60m also prefer Chainlink */}});
+[5,15,60].forEach(tf=>{const m=markets[tf];const currentSlot=getSlot(tf,now);if(m.currentSlot!==null&&m.currentSlot!==currentSlot){if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);m.currentPrediction=null;if(tf===selectedTimeframe)resetPositionHistory();if(tf===selectedTimeframe)resetPredictionLock()}if(m.currentSlot!==currentSlot){m.currentSlot=currentSlot;if(tf!==5)m.priceToBeat=latestChainlinkPrice||price}});
 const activeM=getActiveMarket();if(activeM.priceToBeat)trackPosition(price,activeM.priceToBeat);if(extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}await updateDisplay(price,vl)}
 
 async function refreshCandles(){try{const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100');const raw=await r.json();window.candles5m=raw.map(c=>({time:c[0],open:parseFloat(c[1]),high:parseFloat(c[2]),low:parseFloat(c[3]),close:parseFloat(c[4]),volume:parseFloat(c[5])}))}catch(e){}}
