@@ -1203,7 +1203,7 @@ if(!pred||pred.willBeat===null)return;
 
 // ═══ PREDICTION LOCK SYSTEM — GAP-BASED TIMING ═══
 // Big gap ($50+) = lock in ~10s, Small gap ($5) = wait up to 2 minutes
-// Max wait: 120 seconds into the slot
+// Too close (< $5 after 2 min) = SKIP
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
@@ -1212,6 +1212,10 @@ const priceDiff=Math.abs(price-ptb);
 // $100+ gap → 10s, $50 → 30s, $20 → 60s, $5 → 120s
 const lockAfter=Math.max(10,Math.min(120, 120-Math.min(priceDiff,100)*1.1));
 const shouldLock=timeInSlot>=lockAfter;
+
+// Too close to call: after full wait (120s), gap is still tiny
+const TOO_CLOSE_THRESHOLD=5; // $5
+const isTooClose=priceDiff<TOO_CLOSE_THRESHOLD&&timeInSlot>=120;
 
 let finalPrediction=pred.willBeat;
 let strategy='ABOVE '+Math.round(getPositionBias().abovePct*100)+'%';
@@ -1222,6 +1226,25 @@ let displayConf=clampedConf;
 let lockStatus='';
 
 if(!predictionLock.locked){
+  if(isTooClose){
+    // SKIP — too close to call
+    predictionLock.locked=true;
+    predictionLock.direction=null; // null = skipped
+    savePredictionLock();
+    stats.skipped++;
+    m.currentPrediction=null;
+    const pb=document.getElementById('predictionDisplay');
+    pb.className='pred';
+    pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx3)">⏭️ SKIPPED</div><div style="font-size:.45em;margin-top:4px;color:var(--tx3)">Too close to call — $'+priceDiff.toFixed(2)+' from PTB</div>';
+    document.getElementById('predictionConfidence').textContent='Gap too small to predict reliably';
+    document.getElementById('predictionDetails').textContent='Waiting for next slot...';
+    document.getElementById('confidenceMeter').style.width='0%';
+    document.getElementById('confPercent').textContent='SKIP';
+    console.log('⏭️ SKIPPED: gap $'+priceDiff.toFixed(2)+' too close after 2 min wait');
+    displaySignals(pred.signals);updateCountdown();
+    return;
+  }
   if(shouldLock){
     predictionLock.locked=true;
     predictionLock.direction=finalPrediction;
@@ -1247,6 +1270,11 @@ if(!predictionLock.locked){
     return;
   }
 }else{
+  if(predictionLock.direction===null){
+    // Was skipped — keep showing skip state
+    displaySignals(pred.signals);updateCountdown();
+    return;
+  }
   displayWillBeat=predictionLock.direction;
   lockStatus=' 🔒 LOCKED';
 }
