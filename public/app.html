@@ -494,9 +494,35 @@ async function loadPtb(){
 }
 loadPtb();
 
-// PTB is now captured exclusively by slot change detection in updatePrice().
-// The old startPtbTimer() used setTimeout/setInterval which drifted over time
-// and overwrote the correct PTB with a stale price. Removed to fix PTB accuracy bug.
+// ═══ PRECISE PTB TIMER — fires at exact 5-minute boundary ═══
+// Uses self-correcting setTimeout (not setInterval) so it never drifts.
+// Only captures from Chainlink. If Chainlink is stale, PTB stays null
+// and gets filled by the next fresh Chainlink WebSocket tick.
+function schedulePtbCapture(){
+  const now=Date.now();
+  const slotMs=300000;
+  const nextBoundary=Math.ceil(now/slotMs)*slotMs;
+  const delay=nextBoundary-now;
+  setTimeout(()=>{
+    const fresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+    if(fresh){
+      [5,15,60].forEach(tf=>{
+        if(markets[tf]){
+          markets[tf].priceToBeat=latestChainlinkPrice;
+          if(tf===5)savePtb(latestChainlinkPrice);
+        }
+      });
+      console.log('🎯 PTB SET at boundary: $'+latestChainlinkPrice.toFixed(2)+' (Chainlink)');
+    }else{
+      [5,15,60].forEach(tf=>{if(markets[tf])markets[tf].priceToBeat=null});
+      console.log('⏳ PTB deferred at boundary — Chainlink stale, waiting for fresh tick');
+    }
+    // Schedule next capture (self-correcting — recalculates delay each time)
+    schedulePtbCapture();
+  },delay);
+  console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
+}
+schedulePtbCapture();
 
 function connectPolyWs(){
   try{
@@ -520,7 +546,16 @@ function connectPolyWs(){
           latestBtcPrice=d.payload.value;
           latestBtcPriceTime=Date.now();
           latestChainlinkPriceTime=Date.now();
-          
+
+          // If any market is missing PTB (deferred due to stale Chainlink), fill it now
+          [5,15,60].forEach(function(tf){
+            if(markets[tf]&&markets[tf].currentSlot!==null&&markets[tf].priceToBeat===null){
+              markets[tf].priceToBeat=d.payload.value;
+              if(tf===5)savePtb(d.payload.value);
+              console.log('🎯 PTB filled from fresh Chainlink tick ['+tf+'m]: $'+d.payload.value.toFixed(2));
+            }
+          });
+
           const srcTs=d.payload.timestamp||Date.now();
           processChainlinkTick(d.payload.value, srcTs);
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
@@ -1447,18 +1482,24 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
-    // Immediately capture PTB for new slot — don't wait for startPtbTimer (race condition fix)
-    const newPtb=latestChainlinkPrice||price;
-    m.priceToBeat=newPtb;
-    if(tf===5)savePtb(newPtb);
-    console.log('🎯 PTB captured on slot change ['+tf+'m]: $'+newPtb.toFixed(2));
+    // Backup PTB capture — only if the precise boundary timer hasn't already set it
+    // (PTB is primarily set by schedulePtbCapture at the exact second of each boundary)
+    if(m.priceToBeat===null){
+      const chainlinkFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+      if(chainlinkFresh){
+        m.priceToBeat=latestChainlinkPrice;
+        if(tf===5)savePtb(latestChainlinkPrice);
+        console.log('🎯 PTB backup capture ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (Chainlink)');
+      }
+    }
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
     // On first detection (startup), set PTB if not already loaded from cache
+    // Only use fresh Chainlink — leave null if stale (next tick will fill it)
     if(m.priceToBeat===null){
-      m.priceToBeat=latestChainlinkPrice||price;
-      if(tf===5)savePtb(m.priceToBeat);
+      const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+      if(clFresh){m.priceToBeat=latestChainlinkPrice;if(tf===5)savePtb(latestChainlinkPrice)}
     }
   }
   }catch(slotErr){console.error('❌ Slot update error ['+tf+'m]:',slotErr)}
