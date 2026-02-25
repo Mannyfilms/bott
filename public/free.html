@@ -129,6 +129,29 @@ let priceHistory=[]; // {price, time, open, high, low, close, volume}
 let sentimentData={fearGreed:50,funding:0,sentiment:'NEUTRAL'};
 let ptbHour=-1;
 
+// ═══ PERSIST LOCKED PREDICTION ACROSS RELOADS ═══
+function saveLock(){
+  if(!locked||!prediction)return;
+  try{localStorage.setItem('pred_lock_hourly',JSON.stringify({
+    hour:new Date().getUTCHours(),prediction,ts:Date.now()
+  }))}catch(e){}
+}
+function loadLock(){
+  try{
+    const d=JSON.parse(localStorage.getItem('pred_lock_hourly'));
+    if(d&&d.hour===new Date().getUTCHours()&&d.prediction&&(Date.now()-d.ts)<3600000){
+      locked=true;prediction=d.prediction;
+      console.log('📌 Restored locked prediction from cache: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+function clearLock(){
+  try{localStorage.removeItem('pred_lock_hourly')}catch(e){}
+}
+loadLock();
+
 // ═══ INDICATORS (same as pro version) ═══
 function sma(d,p){if(d.length<p)return null;return d.slice(-p).reduce((a,b)=>a+b,0)/p}
 function ema(d,p){if(d.length<p)return null;const k=2/(p+1);let e=sma(d.slice(0,p),p);for(let i=p;i<d.length;i++)e=d[i]*k+e*(1-k);return e}
@@ -390,7 +413,7 @@ function startPtbTimer(){
   const delay=Math.ceil(now/hourMs)*hourMs-now;
   setTimeout(async()=>{
     async function captureHourly(){
-      locked=false;prediction=null;ptbHour=new Date().getUTCHours();ptbSetAt=new Date();
+      locked=false;prediction=null;clearLock();ptbHour=new Date().getUTCHours();ptbSetAt=new Date();
       priceHistory=[]; // reset price history for new hour's prediction
       document.getElementById('predDisplay').className='pred pred-nu';
       document.getElementById('predValue').textContent='--';
@@ -546,6 +569,7 @@ function updateUI(){
     // Lock it in
     locked=true;
     prediction={willBeat:result.prediction,confidence:result.confidence,bullScore:result.bullScore,bearScore:result.bearScore};
+    saveLock();
     document.getElementById('waitBarWrap').style.display='none';
     document.getElementById('lockInfo').style.display='none';
     document.getElementById('status').textContent='🔒 Prediction locked at '+minutesIn+'m ('+callDiff+', gap $'+priceDiff.toFixed(0)+')';
@@ -589,7 +613,7 @@ function renderSignals(sigs){
 setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<5){
-    locked=false;prediction=null;ptb=null;priceHistory=[];
+    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];
     document.getElementById('predDisplay').className='pred pred-nu';
     document.getElementById('predValue').textContent='--';
     document.getElementById('predConf').textContent='New hour starting...';
