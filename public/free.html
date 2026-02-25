@@ -132,16 +132,29 @@ let ptbHour=-1;
 // ═══ PERSIST LOCKED PREDICTION ACROSS RELOADS ═══
 function saveLock(){
   if(!locked||!prediction)return;
-  try{localStorage.setItem('pred_lock_hourly',JSON.stringify({
-    hour:new Date().getUTCHours(),prediction,ts:Date.now()
-  }))}catch(e){}
+  const data={hour:new Date().getUTCHours(),prediction,ts:Date.now()};
+  try{localStorage.setItem('pred_lock_hourly',JSON.stringify(data))}catch(e){}
+  // Save to server so all browsers get the same locked prediction
+  fetch('/api/pred-lock-hourly',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).catch(()=>{});
 }
-function loadLock(){
+async function loadLock(){
+  const hour=new Date().getUTCHours();
+  // Try localStorage first (fastest)
   try{
     const d=JSON.parse(localStorage.getItem('pred_lock_hourly'));
-    if(d&&d.hour===new Date().getUTCHours()&&d.prediction&&(Date.now()-d.ts)<3600000){
+    if(d&&d.hour===hour&&d.prediction&&(Date.now()-d.ts)<3600000){
       locked=true;prediction=d.prediction;
-      console.log('📌 Restored locked prediction from cache: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      console.log('📌 Restored locked prediction from local cache: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      return true;
+    }
+  }catch(e){}
+  // Try server (syncs across browsers)
+  try{
+    const r=await fetch('/api/pred-lock-hourly');const d=await r.json();
+    if(d&&d.hour===hour&&d.prediction){
+      locked=true;prediction=d.prediction;
+      localStorage.setItem('pred_lock_hourly',JSON.stringify(d));
+      console.log('📌 Restored locked prediction from server: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
       return true;
     }
   }catch(e){}
