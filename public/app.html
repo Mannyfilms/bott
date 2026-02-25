@@ -408,8 +408,8 @@ function fmt(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-di
 
 // Theme toggle
 function toggleTheme(){}
-let btcWs=null,latestBtcPrice=null;
-let polyWs=null,latestChainlinkPrice=null;
+let btcWs=null,latestBtcPrice=null,latestBtcPriceTime=0;
+let polyWs=null,latestChainlinkPrice=null,latestChainlinkPriceTime=0;
 let lastChainlinkSlot=null;
 
 // ═══ CHAINLINK CANDLE BUILDER ═══
@@ -525,11 +525,13 @@ function connectPolyWs(){
         if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
           latestChainlinkPrice=d.payload.value;
           latestBtcPrice=d.payload.value;
+          latestBtcPriceTime=Date.now();
+          latestChainlinkPriceTime=Date.now();
           
           const srcTs=d.payload.timestamp||Date.now();
           processChainlinkTick(d.payload.value, srcTs);
         }else if(d.topic==='crypto_prices'&&d.payload&&d.payload.symbol==='btcusdt'){
-          if(!latestChainlinkPrice)latestBtcPrice=d.payload.value;
+          if(!latestChainlinkPrice){latestBtcPrice=d.payload.value;latestBtcPriceTime=Date.now()}
         }
       }catch(ex){}
     };
@@ -543,7 +545,7 @@ function connectPolyWs(){
 }
 
 // BACKUP: Binance WebSocket (in case Polymarket RTDS fails)
-function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice)latestBtcPrice=parseFloat(d.p)};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
+function connectBtcWs(){try{btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');btcWs.onmessage=function(e){const d=JSON.parse(e.data);if(!latestChainlinkPrice){latestBtcPrice=parseFloat(d.p);latestBtcPriceTime=Date.now()}};btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};btcWs.onerror=function(){btcWs.close()}}catch(e){setTimeout(connectBtcWs,5000)}}
 connectPolyWs();
 connectBtcWs();
 
@@ -676,15 +678,20 @@ setTimeout(fetchRecentCandles,4000);
 // We apply a small correction factor when falling back to Binance
 const USDT_USD_FACTOR=0.9995; // USDT is slightly less than 1 USD
 async function fetchBTCPrice(){
-  if(latestBtcPrice)return latestBtcPrice;
+  const STALE_MS=15000; // if WS hasn't updated in 15s, treat as dead
+  const wsAge=Date.now()-latestBtcPriceTime;
+  if(latestBtcPrice&&wsAge<STALE_MS)return latestBtcPrice;
+  // WS is stale or never connected — hit REST directly
   try{
     const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
     const d=await r.json();
     const binancePrice=parseFloat(d.price);
-    // Apply correction if Chainlink isn't connected yet
+    // Update our cached value so the rest of the system stays in sync
+    latestBtcPrice=binancePrice;
+    latestBtcPriceTime=Date.now();
     if(!latestChainlinkPrice)return binancePrice*USDT_USD_FACTOR;
     return binancePrice;
-  }catch(e){return simPrice()}
+  }catch(e){return latestBtcPrice||simPrice()} // last known or sim
 }
 let lsp=68360,lsv=1e6;
 function simPrice(){lsp+=(Math.random()-.5)*100+(Math.random()-.5)*20;return lsp}
@@ -1124,6 +1131,7 @@ const nf=await fetchNetFlow();
 if(nf){externalData.exchangeFlow=nf}
 await fetchVolume();
 }
+try{
 document.getElementById('fearGreed').textContent=Math.round(externalData.fearGreed);
 document.getElementById('sentiment').textContent=externalData.sentiment;
 document.getElementById('btcDominance').textContent=externalData.btcDominance.toFixed(1)+'%';
@@ -1133,6 +1141,7 @@ document.getElementById('exchangeFlow').textContent=externalData.exchangeFlow;
 const vol24=realVolume;
 externalData.whaleActivity=vol24>40e9?'HIGH':vol24>25e9?'MODERATE':'LOW';
 document.getElementById('whaleActivity').textContent=externalData.whaleActivity;
+}catch(e){console.warn('⚠️ updateExt DOM write failed:',e)}
 }
 
 // ═══ ML ═══
@@ -1411,7 +1420,7 @@ function updateHistoryDisplay(){const el=document.getElementById('history');if(!
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-async function updatePrice(){try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
+async function updatePrice(){try{lastTickTime=Date.now();const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
 // Store with OHLC data from live ticks
 const last=priceHistory.length?priceHistory[priceHistory.length-1]:null;
 priceHistory.push({price,volume:vl,timestamp:now.getTime(),
@@ -1497,6 +1506,42 @@ updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInter
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};signalMultipliers={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,currentSlot:null,currentPrediction:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
 window.addEventListener('DOMContentLoaded',()=>{loadProgress();startPredictions()});
+
+// ═══ VISIBILITY RECOVERY ═══
+// Browsers throttle/pause setInterval when the tab is hidden.
+// When the user comes back, force an immediate update and re-sync the interval.
+let lastTickTime=Date.now();
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&isRunning){
+    const gap=Date.now()-lastTickTime;
+    console.log('👁 Tab visible again — gap was '+(gap/1000).toFixed(0)+'s, forcing tick');
+    // Re-create the interval to reset any throttling
+    clearInterval(updateInterval);
+    updatePrice(); // immediate tick
+    updateInterval=setInterval(updatePrice,5e3);
+    // Re-check WebSocket health — reconnect if stale
+    if(Date.now()-latestBtcPriceTime>15000){
+      console.log('🔌 WS appears dead after tab hide, reconnecting...');
+      if(polyWs)try{polyWs.close()}catch(e){}
+      if(btcWs)try{btcWs.close()}catch(e){}
+      // onclose handlers will auto-reconnect
+    }
+  }
+});
+
+// ═══ WATCHDOG ═══
+// If updatePrice somehow stops ticking (unhandled exception, memory issue, etc.),
+// this watchdog detects it and restarts the interval.
+setInterval(()=>{
+  if(!isRunning)return;
+  const staleSec=(Date.now()-lastTickTime)/1000;
+  if(staleSec>30){
+    console.warn('🐕 Watchdog: no tick for '+staleSec.toFixed(0)+'s — restarting interval');
+    clearInterval(updateInterval);
+    updatePrice();
+    updateInterval=setInterval(updatePrice,5e3);
+  }
+},15000);
 </script>
 </body>
 </html>
