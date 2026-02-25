@@ -19,13 +19,8 @@
         .nav-right{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
         .nav-user{font-size:.8em;color:var(--tx2);padding:0 10px}
         .btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border:none;border-radius:var(--rs);font-family:'Outfit',sans-serif;font-size:.8em;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap}
-        .btn-go{background:linear-gradient(140deg,var(--btc),#e07c0e);color:#fff;box-shadow:0 2px 10px rgba(247,147,26,.15)}
-        .btn-go:hover{box-shadow:0 3px 16px rgba(247,147,26,.22);transform:translateY(-1px)}
         .btn-g{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
         .btn-g:hover{background:var(--sf3);color:var(--tx)}
-        .btn-r{background:var(--dns);color:var(--dn);border:1px solid rgba(255,71,87,.12)}
-        .btn-r:hover{background:var(--dnm)}
-        .btn:disabled{opacity:.35;cursor:not-allowed;transform:none!important}
         .disc{display:flex;align-items:center;gap:8px;padding:9px 15px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:20px;font-size:.76em;color:var(--tx3);line-height:1.4}
         .disc svg{flex-shrink:0;opacity:.45}
         .card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:22px;margin-bottom:14px;transition:border-color .2s}
@@ -87,10 +82,6 @@
         <div class="nav-text"><h1>Polymarket BTC Predictor</h1><span>5-Minute Forecasts &middot; Chainlink BTC/USD (Polymarket Source)</span></div>
         <div class="nav-right">
             <span class="nav-user" id="userGreeting"></span>
-            <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
-            <button class="btn btn-g" id="stopBtn" onclick="stopPredictions()" disabled>Stop</button>
-            <button class="btn btn-g" onclick="saveProgress()">Save</button>
-            <button class="btn btn-r" onclick="resetStats()">Reset</button>
             <button class="btn btn-g" onclick="logout()">Log out</button>
         </div>
     </nav>
@@ -929,9 +920,8 @@ async function updatePrice(){
 
 // ═══ CONTROLS ═══
 async function startPredictions(){
-    if(isRunning)return;isRunning=true;
-    document.getElementById('startBtn').disabled=true;
-    document.getElementById('stopBtn').disabled=false;
+    if(isRunning)return;
+    isRunning=true;
     document.getElementById('status').textContent='Loading historical data...';
 
     await loadHistoricalData();
@@ -950,11 +940,10 @@ async function startPredictions(){
     const now=new Date();
     [5,15,60].forEach(tf=>{markets[tf].currentSlot=getSlot(tf,now)});
 
-    // Load PTB — don't set a default here, let the timer handle it
-    // This ensures PTB is always from the actual slot boundary
+    // Load PTB from cache/server
     const ptbLoaded=await loadPtb();
     if(!ptbLoaded){
-        console.log('⚠️ No valid PTB found for current slot — will capture at next boundary');
+        console.log('⚠️ No valid PTB found — will capture at next boundary');
         document.getElementById('ptbStatus').textContent='Waiting for boundary...';
     }
 
@@ -967,46 +956,18 @@ async function startPredictions(){
     checkInterval=setInterval(updateCountdown,1000);
 }
 
-function stopPredictions(){
-    if(!isRunning)return;isRunning=false;
-    clearInterval(updateInterval);clearInterval(checkInterval);
-    document.getElementById('startBtn').disabled=false;
-    document.getElementById('stopBtn').disabled=true;
-    document.getElementById('status').textContent='Stopped';
-}
-
-function resetStats(){
-    if(!confirm('Reset all predictions and history?'))return;
-    stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};
-    predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};signalMultipliers=[];recentResults=[];
-    [5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,ptbSetAt:null,currentSlot:null,currentPrediction:null}});
-    if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();
-    lstmModel=null;technicalModel=null;hybridModel=null;
-    localStorage.removeItem('btcPred');localStorage.removeItem('ptb');localStorage.removeItem('predLock5m');localStorage.removeItem('currentPred5m');
-    updateStats();updateHistoryDisplay();updateSignalPerformance();
-    document.getElementById('mlStatus').innerHTML='Ensemble: Initializing';
-    document.getElementById('status').textContent='Reset complete';
-    document.getElementById('priceToBeat').textContent='--';
-    document.getElementById('vsComparison').textContent='--';
-    document.getElementById('ptbStatus').textContent='';
-    document.getElementById('histCount').textContent='';
-}
-
 // ═══════════════════════════════════════════════════
-// FIX 4: CORRECT STARTUP ORDER
-// Load history FIRST, then update UI, then start the price loop.
-// This prevents loadHistoricalData() from racing against the UI refresh.
+// AUTO-START: Load history first, refresh UI, then begin
 // ═══════════════════════════════════════════════════
 window.addEventListener('DOMContentLoaded',()=>{
     const loaded=loadProgress();
     if(loaded){
-        // Refresh all UI from loaded data BEFORE anything else runs
         updateStats();
         updateHistoryDisplay();
         updateSignalPerformance();
-        console.log('✅ History UI refreshed from saved data');
+        console.log('✅ History UI refreshed from saved data ('+predictionHistory.length+' predictions)');
     }
-    // Auto-start
+    // Auto-start immediately — no button needed
     startPredictions();
 });
 </script>
