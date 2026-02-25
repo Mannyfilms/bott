@@ -1197,7 +1197,6 @@ catch(e){console.log('❌ makePred error:',e);return{willBeat:null,confidence:0,
 
 // ═══ DISPLAY ═══
 async function updateDisplay(price,volume){try{
-// ── Always update price display, indicators, and countdown ──
 document.getElementById('currentPrice').textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 const ptbNow=getActiveMarket().priceToBeat;
@@ -1209,7 +1208,6 @@ document.getElementById('sma5').textContent=s5?'$'+s5.toFixed(2):'--';document.g
 if(vols.length>=20){const rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10,vc=((rv-ov)/ov*100).toFixed(1);document.getElementById('volumeTrend').textContent=(vc>0?'+ ':'- ')+vc+'%';document.getElementById('volumeTrend').style.color=vc>0?'var(--up)':'var(--dn)'}
 updateExt();
 updateCountdown();
-// ── Only run prediction logic once PTB is available ──
 const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe);
 if(priceHistory.length>=5&&ptb){let pred;try{pred=await makePred(priceHistory,vols,ptb)}catch(e){console.log('❌ makePred call failed:',e);return}
 if(!pred||pred.willBeat===null)return;
@@ -1459,6 +1457,7 @@ async function refreshCandles(){
 }
 
 async function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;
+try{
 // Load historical candles first
 document.getElementById('status').textContent='Loading 200 historical candles...';
 await loadHistoricalData();
@@ -1481,7 +1480,8 @@ const now=new Date();
   // PTB will be set when the next slot boundary is detected by the WebSocket handler
 });
 document.getElementById('status').textContent='Running — 200+ data points loaded';
-updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
+updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3);
+}catch(e){console.error('❌ startPredictions failed:',e);isRunning=false;document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Start failed — click Start to retry'}}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};signalMultipliers={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,currentSlot:null,currentPrediction:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
 window.addEventListener('DOMContentLoaded',()=>{loadProgress();startPredictions()});
