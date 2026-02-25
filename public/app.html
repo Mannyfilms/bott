@@ -1474,19 +1474,24 @@ try{
     console.log('📌 Restored currentPrediction for slot '+saved.slot);
   }
 }catch(e){}
-// Set initial slots and PTB for all markets
+// Set initial slots for all markets
+// PTB is only set if loadPtb() already found a valid cached value for this slot.
+// On first login (no cache), we leave PTB null and show '--' until the next real slot boundary.
 const latestP=latestBtcPrice||(priceHistory.length?priceHistory[priceHistory.length-1].price:0);
 const now=new Date();
+const ptbAlreadySet=!!markets[5].priceToBeat; // set by loadPtb() if cache was valid
 [5,15,60].forEach(tf=>{
   markets[tf].currentSlot=getSlot(tf,now);
-  // Set PTB from cached value (loaded by loadPtb() at startup) or fall back to current price
-  // This ensures PTB is available immediately on page load, not dependent on a slot boundary
-  if(!markets[tf].priceToBeat&&latestP){
+  // For non-5m timeframes, set PTB now if we have a price (15m/1h aren't tracked by Chainlink cache)
+  if(tf!==5&&!markets[tf].priceToBeat&&latestP){
     markets[tf].priceToBeat=latestP;
-    if(tf===5)savePtb(latestP);
-    console.log('🎯 PTB initialised from current price ['+tf+'m]: $'+latestP.toFixed(2));
   }
 });
+if(!ptbAlreadySet){
+  console.log('ℹ️ No valid PTB cache found — showing "--" until next slot boundary');
+  document.getElementById('priceToBeat').textContent='--';
+  document.getElementById('vsComparison').textContent='Waiting for slot boundary...';
+}
 document.getElementById('status').textContent='Running — 200+ data points loaded';
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
 function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
