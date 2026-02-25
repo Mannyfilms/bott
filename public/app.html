@@ -683,7 +683,7 @@ async function fetchBTCPrice(){
   if(latestBtcPrice&&wsAge<STALE_MS)return latestBtcPrice;
   // WS is stale or never connected — hit REST directly
   try{
-    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+    const r=await fetchWithTimeout('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',{},5000);
     const d=await r.json();
     const binancePrice=parseFloat(d.price);
     // Update our cached value so the rest of the system stays in sync
@@ -699,40 +699,60 @@ let realVolume=0;
 async function fetchVolume(){try{const r=await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT');const d=await r.json();realVolume=parseFloat(d.quoteVolume);return parseFloat(d.volume)}catch(e){return 1e6}}
 function getVolume(){return realVolume||1e6}
 
+// ═══ FETCH WITH TIMEOUT ═══
+// Wraps fetch() so a hanging request never blocks startup or ticks
+function fetchWithTimeout(url,opts={},ms=8000){
+  const ctrl=new AbortController();
+  const id=setTimeout(()=>ctrl.abort(),ms);
+  return fetch(url,{...opts,signal:ctrl.signal}).finally(()=>clearTimeout(id));
+}
+
 // ═══ HISTORICAL DATA LOADER ═══
 let historicalCandles=[];
 async function loadHistoricalData(){
   try{
-    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--btc)">LOADING</strong> &middot; Fetching 200 candles from Binance...';
-    // Fetch 200 1-minute candles
-    const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=200');
-    const raw=await r.json();
-    historicalCandles=raw.map(c=>({
-      time:c[0],open:parseFloat(c[1]),high:parseFloat(c[2]),low:parseFloat(c[3]),
-      close:parseFloat(c[4]),volume:parseFloat(c[5]),trades:c[8]
-    }));
-    // Pre-populate priceHistory from candles
-    historicalCandles.forEach(c=>{
-      priceHistory.push({price:c.close,volume:c.volume,timestamp:c.time,
-        open:c.open,high:c.high,low:c.low,trades:c.trades});
-    });
-    if(priceHistory.length>300)priceHistory=priceHistory.slice(-300);
-    // Also fetch 5-minute candles for bigger picture
-    const r5=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100');
-    const raw5=await r5.json();
-    window.candles5m=raw5.map(c=>({
-      time:c[0],open:parseFloat(c[1]),high:parseFloat(c[2]),low:parseFloat(c[3]),
-      close:parseFloat(c[4]),volume:parseFloat(c[5])
-    }));
-    // Fetch buy/sell ratio
-    await fetchTakerVolume();
-    // Fetch order book, open interest, trade flow, long/short ratio
-    await fetchOrderBook();
-    await fetchOpenInterest();
-    await fetchRecentTrades();
-    await fetchLongShortRatio();
-    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; 200 candles + Chainlink candles &middot; 24 strategies online';
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--btc)">LOADING</strong> &middot; Fetching candles...';
+    // Run all startup fetches in parallel with individual timeouts
+    // Nothing here can block for more than 8s, and the whole group races against 10s
+    const [raw1m, raw5m] = await Promise.all([
+      fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=200',{},8000)
+        .then(r=>r.json()).catch(()=>null),
+      fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100',{},8000)
+        .then(r=>r.json()).catch(()=>null)
+    ]);
+    if(raw1m){
+      historicalCandles=raw1m.map(c=>({
+        time:c[0],open:parseFloat(c[1]),high:parseFloat(c[2]),low:parseFloat(c[3]),
+        close:parseFloat(c[4]),volume:parseFloat(c[5]),trades:c[8]
+      }));
+      historicalCandles.forEach(c=>{
+        priceHistory.push({price:c.close,volume:c.volume,timestamp:c.time,
+          open:c.open,high:c.high,low:c.low,trades:c.trades});
+      });
+      if(priceHistory.length>300)priceHistory=priceHistory.slice(-300);
+    }
+    if(raw5m){
+      window.candles5m=raw5m.map(c=>({
+        time:c[0],open:parseFloat(c[1]),high:parseFloat(c[2]),low:parseFloat(c[3]),
+        close:parseFloat(c[4]),volume:parseFloat(c[5])
+      }));
+    }
+    // Fire secondary fetches in parallel, non-blocking — don't await, let them populate in background
+    Promise.all([
+      fetchTakerVolume().catch(()=>{}),
+      fetchOrderBook().catch(()=>{}),
+      fetchOpenInterest().catch(()=>{}),
+      fetchRecentTrades().catch(()=>{}),
+      fetchLongShortRatio().catch(()=>{})
+    ]);
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; '+(raw1m?'200 candles loaded':'Live mode')+'&middot; 24 strategies online';
     return true;
+  }catch(e){
+    console.error('Failed to load historical:',e);
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; Live mode &middot; All models online';
+    return false;
+  }
+}
   }catch(e){
     console.error('Failed to load historical:',e);
     document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; Live mode &middot; All models online';
@@ -1463,16 +1483,23 @@ if(extUpdateCount>0&&extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
 
 async function refreshCandles(){
   try{
-    const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100');
+    const r=await fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100',{},8000);
     const raw=await r.json();
     window.candles5m=raw.map(c=>({time:c[0],open:parseFloat(c[1]),high:parseFloat(c[2]),low:parseFloat(c[3]),close:parseFloat(c[4]),volume:parseFloat(c[5])}));
   }catch(e){}
 }
 
 async function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;
-// Load historical candles first
-document.getElementById('status').textContent='Loading 200 historical candles...';
-await loadHistoricalData();
+document.getElementById('status').textContent='Loading historical data...';
+// Hard 10s deadline — if data loading hangs, start anyway in live mode
+await Promise.race([
+  loadHistoricalData(),
+  new Promise(res=>setTimeout(()=>{
+    console.warn('⚠️ loadHistoricalData timed out — starting in live mode');
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; Live mode (data load timed out)';
+    res();
+  },10000))
+]);
 // Restore locked prediction if same slot
 loadPredictionLock();
 // Also restore currentPrediction for the active market
