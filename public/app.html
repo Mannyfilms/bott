@@ -142,6 +142,10 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         Predictions are not 100% accurate and can make mistakes. Use as a reference, not financial advice. Progress auto-saves.
     </div>
+    <div class="disc" style="background:rgba(247,181,56,.08);border-color:rgba(247,181,56,.25);color:#d4a017">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        Please keep this tab open &mdash; switching away or minimising may cause the Price to Beat to slowly become inaccurate.
+    </div>
 
     <div class="card">
         <div class="ct">Market Status</div>
@@ -240,6 +244,23 @@ async function logout(){
     await fetch('/api/logout',{method:'POST'});window.location.href='/';
 }
 checkAuth();
+
+// ═══ UPDATE NOTIFICATION ═══
+// Change this number when you push an update to trigger the notification
+const SITE_VERSION = 1;
+(function checkForUpdate(){
+  const lastVersion = parseInt(localStorage.getItem('btcPredVersion') || '0');
+  if(lastVersion > 0 && lastVersion < SITE_VERSION){
+    // User has used the site before but this is a new version
+    const banner = document.createElement('div');
+    banner.id = 'updateBanner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:14px 20px;text-align:center;font-size:.9em;box-shadow:0 4px 20px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;gap:10px;';
+    banner.innerHTML = '<span style="font-size:1.2em">🚀</span> <span>An update to improve the site has been pushed! Please get your new access code in the Discord.</span> <a href="https://discord.gg/polyvisionbot" target="_blank" style="color:#fff;background:rgba(255,255,255,.2);padding:5px 14px;border-radius:6px;text-decoration:none;font-weight:600;margin-left:8px">Open Discord</a> <button onclick="document.getElementById(\'updateBanner\').remove();localStorage.setItem(\'btcPredVersion\','+SITE_VERSION+')" style="background:none;border:none;color:rgba(255,255,255,.7);cursor:pointer;font-size:1.2em;margin-left:8px;padding:4px">✕</button>';
+    document.body.prepend(banner);
+  }
+  localStorage.setItem('btcPredVersion', SITE_VERSION);
+})();
+
 setInterval(async () => {
   try {
     const r = await fetch('/api/me');
@@ -1175,7 +1196,7 @@ function applyLearned(name,baseScore){
   return baseScore*sm.mult;
 }
 
-async function makePred(prices,volumes,ptb){try{if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
+function makePred(prices,volumes,ptb){try{if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
 const jp=prices.map(p=>p.price),cur=jp[jp.length-1];
 
 // ═══ SIMPLE: How long has price been above/below PTB? ═══
@@ -1217,7 +1238,7 @@ return{willBeat:prediction,confidence:confidence,signals:sigs,modelPredictions:m
 catch(e){console.log('❌ makePred error:',e);return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]}}}
 
 // ═══ DISPLAY ═══
-async function updateDisplay(price,volume){try{
+function updateDisplay(price,volume){try{
 document.getElementById('currentPrice').textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 if(getActiveMarket().priceToBeat){const ptb=getActiveMarket().priceToBeat;document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});const d=price-ptb,p=(d/ptb*100).toFixed(3);document.getElementById('vsComparison').innerHTML=d>0?'<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':'<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>'}
@@ -1228,7 +1249,7 @@ document.getElementById('sma5').textContent=s5?'$'+s5.toFixed(2):'--';document.g
 if(vols.length>=20){const rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10,vc=((rv-ov)/ov*100).toFixed(1);document.getElementById('volumeTrend').textContent=(vc>0?'+ ':'- ')+vc+'%';document.getElementById('volumeTrend').style.color=vc>0?'var(--up)':'var(--dn)'}
 updateExt();
 const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe);
-if(priceHistory.length>=5&&ptb){let pred;try{pred=await makePred(priceHistory,vols,ptb)}catch(e){console.log('❌ makePred call failed:',e);return}
+if(priceHistory.length>=5&&ptb){let pred;try{pred=makePred(priceHistory,vols,ptb)}catch(e){console.log('❌ makePred call failed:',e);return}
 if(!pred||pred.willBeat===null)return;
 
 // ═══ PREDICTION LOCK SYSTEM — GAP-BASED TIMING ═══
@@ -1377,7 +1398,7 @@ function checkPrediction(np){
   // ML training data
   trainingData.push({features:cp.features,label:ab?1:0});
   if(trainingData.length>100)trainingData.shift();
-  if(trainingData.length>=30&&trainingData.length%5===0)setTimeout(()=>trainModels(),2000);
+  if(trainingData.length>=30&&trainingData.length%5===0){console.log('📝 Would train models (disabled for stability)')}
   
   // Stats
   stats.total++;
@@ -1431,8 +1452,7 @@ function updateHistoryDisplay(){}
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-let _updateRunning=false;
-async function updatePrice(){if(_updateRunning){console.log('⏩ updatePrice already running, skipping');return}_updateRunning=true;try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
+async function updatePrice(){try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
 // Store with OHLC data from live ticks
 const last=priceHistory.length?priceHistory[priceHistory.length-1]:null;
 priceHistory.push({price,volume:vl,timestamp:now.getTime(),
@@ -1469,12 +1489,12 @@ if(priceHistory.length>500)priceHistory.shift();
 // Track position vs PTB every tick
 const activeM=getActiveMarket();
 if(activeM.priceToBeat)trackPosition(price,activeM.priceToBeat);
-await updateDisplay(price,vl);
+updateDisplay(price,vl);
 // Refresh candles and buy/sell data every 60 seconds
 // extUpdateCount is incremented inside updateExt (called by updateDisplay), so check AFTER
 if(extUpdateCount>0&&extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
 lastTickTime=Date.now();consecutiveErrors=0;
-}catch(e){console.error('❌ updatePrice error:',e);consecutiveErrors++;if(consecutiveErrors>3){console.warn('🐕 '+consecutiveErrors+' consecutive errors — attempting recovery');try{resetPredictionLock();resetPositionHistory()}catch(re){}}}finally{_updateRunning=false}}
+}catch(e){console.error('❌ updatePrice error:',e);consecutiveErrors++;if(consecutiveErrors>3){console.warn('🐕 '+consecutiveErrors+' consecutive errors — attempting recovery');try{resetPredictionLock();resetPositionHistory()}catch(re){}}}}
 
 async function refreshCandles(){
   try{
@@ -1553,19 +1573,18 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
-// ═══ WATCHDOG ═══
-// Detects when updatePrice stops completing successfully and restarts
+// ═══ HEARTBEAT — independent check that page is alive ═══
+let _heartbeatCount=0;
 setInterval(()=>{
-  if(!isRunning)return;
+  _heartbeatCount++;
   const staleSec=(Date.now()-lastTickTime)/1000;
-  if(staleSec>20){
-    console.warn('🐕 Watchdog: no successful tick for '+staleSec.toFixed(0)+'s — restarting');
-    consecutiveErrors=0;
+  if(staleSec>12&&isRunning){
+    console.warn('💓 Heartbeat #'+_heartbeatCount+': updatePrice stale for '+staleSec.toFixed(0)+'s — force restarting interval');
     clearInterval(updateInterval);
-    updatePrice();
     updateInterval=setInterval(updatePrice,5e3);
+    updatePrice(); // kick it
   }
-},10000);
+},8000);
 </script>
 </body>
 </html>
