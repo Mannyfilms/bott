@@ -924,15 +924,15 @@ async function startPredictions(){
     isRunning=true;
     document.getElementById('status').textContent='Loading historical data...';
 
-    await loadHistoricalData();
+    // Don't let a failed fetch block everything
+    try{ await loadHistoricalData(); }catch(e){ console.warn('Historical load failed, continuing anyway',e); }
 
     // Restore saved state for this slot
-    loadPredictionLock();
+    try{ loadPredictionLock(); }catch(e){}
     try{
         const saved=JSON.parse(localStorage.getItem('currentPred5m'));
         if(saved&&saved.slot===Math.floor(Date.now()/300000)){
             markets[5].currentPrediction=saved.pred;
-            console.log('📌 Restored currentPrediction for current slot');
         }
     }catch(e){}
 
@@ -941,11 +941,10 @@ async function startPredictions(){
     [5,15,60].forEach(tf=>{markets[tf].currentSlot=getSlot(tf,now)});
 
     // Load PTB from cache/server
-    const ptbLoaded=await loadPtb();
-    if(!ptbLoaded){
-        console.log('⚠️ No valid PTB found — will capture at next boundary');
-        document.getElementById('ptbStatus').textContent='Waiting for boundary...';
-    }
+    try{
+        const ptbLoaded=await loadPtb();
+        if(!ptbLoaded) document.getElementById('ptbStatus').textContent='Waiting for boundary...';
+    }catch(e){}
 
     // Start the PTB boundary timer
     startPtbTimer();
@@ -957,19 +956,20 @@ async function startPredictions(){
 }
 
 // ═══════════════════════════════════════════════════
-// AUTO-START: Load history first, refresh UI, then begin
+// AUTO-START — window.onload fires after ALL scripts (TF.js etc) are ready
 // ═══════════════════════════════════════════════════
-window.addEventListener('DOMContentLoaded',()=>{
-    const loaded=loadProgress();
-    if(loaded){
-        updateStats();
-        updateHistoryDisplay();
-        updateSignalPerformance();
-        console.log('✅ History UI refreshed from saved data ('+predictionHistory.length+' predictions)');
-    }
-    // Auto-start immediately — no button needed
-    startPredictions();
-});
+function boot(){
+    try{
+        const loaded=loadProgress();
+        if(loaded){
+            updateStats();
+            updateHistoryDisplay();
+            updateSignalPerformance();
+        }
+    }catch(e){console.error('load error',e)}
+    startPredictions().catch(e=>console.error('start error',e));
+}
+window.onload=boot;
 </script>
 </body>
 </html>
