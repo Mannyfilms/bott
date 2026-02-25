@@ -1,103 +1,83 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const { getOrCreateUser, revokeUser } = require('../server/database.js');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bitcoin Prediction Bot</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root{--bg:#08090d;--surface:#13151c;--sf2:#1a1c25;--border:rgba(255,255,255,.06);--text:#edeef2;--text-2:#a0a5b8;--text-3:#5d6277;--btc:#f7931a;--down:#ff4757;--up:#22c55e}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;-webkit-font-smoothing:antialiased}
+        .glow{position:fixed;border-radius:50%;filter:blur(100px);pointer-events:none}
+        .glow.a{width:420px;height:420px;background:var(--btc);opacity:.06;top:10%;left:15%}
+        .glow.b{width:350px;height:350px;background:#636bff;opacity:.05;bottom:10%;right:15%}
+        .wrap{position:relative;z-index:2;width:100%;max-width:460px;padding:20px;animation:fadeUp .65s ease}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+        .mark{width:64px;height:64px;border-radius:18px;background:linear-gradient(140deg,var(--btc),#e07c0e);display:grid;place-items:center;margin:0 auto 24px;font-size:28px;box-shadow:0 12px 40px rgba(247,147,26,.18)}
+        h1{font-size:1.55em;font-weight:600;letter-spacing:-.02em;margin-bottom:4px;text-align:center}
+        .sub{font-size:.92em;color:var(--text-2);margin-bottom:28px;text-align:center}
+        .free-card{background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;cursor:pointer;transition:all .2s;position:relative;overflow:hidden}
+        .free-card:hover{border-color:rgba(255,255,255,.12);transform:translateY(-1px)}
+        .free-card::after{content:'FREE';position:absolute;top:12px;right:12px;background:rgba(34,197,94,.1);color:var(--up);font-size:.62em;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:.08em}
+        .free-card h3{font-size:1em;font-weight:600;margin-bottom:4px}
+        .free-card p{font-size:.8em;color:var(--text-3);line-height:1.5}
+        .free-btn{display:block;width:100%;padding:12px;border:none;border-radius:10px;background:var(--sf2);color:var(--text-2);font-family:'Outfit',sans-serif;font-size:.85em;font-weight:600;cursor:pointer;transition:all .15s;margin-top:12px;border:1px solid var(--border)}
+        .free-btn:hover{background:rgba(255,255,255,.08);color:var(--text)}
+        .divider{display:flex;align-items:center;gap:12px;margin:20px 0;font-size:.75em;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em}
+        .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+        .pro-card{background:var(--surface);border:1.5px solid rgba(247,147,26,.15);border-radius:14px;padding:20px;position:relative;overflow:hidden}
+        .pro-card::after{content:'PRO';position:absolute;top:12px;right:12px;background:rgba(247,147,26,.1);color:var(--btc);font-size:.62em;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:.08em}
+        .pro-card h3{font-size:1em;font-weight:600;margin-bottom:4px;color:var(--btc)}
+        .pro-card p{font-size:.8em;color:var(--text-3);line-height:1.5;margin-bottom:14px}
+        input{width:100%;padding:12px 16px;background:var(--sf2);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.9em;outline:none;transition:border-color .2s,box-shadow .2s;text-align:center;letter-spacing:.12em;text-transform:uppercase}
+        input::placeholder{color:var(--text-3);text-transform:none;letter-spacing:0}
+        input:focus{border-color:rgba(247,147,26,.45);box-shadow:0 0 0 3px rgba(247,147,26,.08)}
+        .pro-btn{width:100%;padding:12px;border:none;border-radius:10px;background:linear-gradient(140deg,var(--btc),#e07c0e);color:#fff;font-family:'Outfit',sans-serif;font-size:.88em;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s;box-shadow:0 4px 20px rgba(247,147,26,.2);margin-top:10px}
+        .pro-btn:hover{transform:translateY(-1px);box-shadow:0 6px 28px rgba(247,147,26,.28)}
+        .pro-btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
+        .err{color:var(--down);font-size:.78em;margin-top:8px;min-height:18px;text-align:center}
+        .hint{font-size:.72em;color:var(--text-3);margin-top:20px;text-align:center;line-height:1.5}
+        @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+        .shake{animation:shake .35s ease}
+    </style>
+</head>
+<body>
+    <div class="glow a"></div>
+    <div class="glow b"></div>
+    <div class="wrap">
+        <div class="mark">&#8383;</div>
+        <h1>Polymarket Bitcoin Prediction Bot</h1>
+        <p class="sub">AI-powered Bitcoin price predictions</p>
 
-const TOKEN = process.env.DISCORD_TOKEN;
-const GUILD_ID = process.env.DISCORD_GUILD_ID;
-const REQUIRED_ROLE_ID = '1472957051792789506';
+        <div class="free-card" onclick="window.location.href='/free'">
+            <h3>1-Hour Predictions</h3>
+            <p>Real-time BTC predictions every hour using Polymarket data, ML models, and market sentiment.</p>
+            <button class="free-btn">Try Free →</button>
+        </div>
 
-if (!TOKEN) {
-  console.error('DISCORD_TOKEN not set!');
-  return;
-}
+        <div class="divider">or</div>
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
-});
+        <div class="pro-card">
+            <h3>5-Minute Predictions</h3>
+            <p>Faster predictions with orderbook analysis, candle patterns, and advanced strategies.</p>
+            <div id="field">
+                <input type="text" id="code" placeholder="Enter access code" maxlength="9" autocomplete="off">
+            </div>
+            <button class="pro-btn" id="btn" onclick="verify()">Unlock Pro</button>
+            <div class="err" id="err">&nbsp;</div>
+        </div>
 
-async function registerCommands() {
-  const commands = [
-    new SlashCommandBuilder().setName('getaccess').setDescription('Get your personal access code'),
-    new SlashCommandBuilder().setName('mycode').setDescription('View your existing access code'),
-    new SlashCommandBuilder().setName('revoke').setDescription('Revoke access (admin only)')
-      .addUserOption(opt => opt.setName('user').setDescription('User to revoke').setRequired(true))
-  ].map(cmd => cmd.toJSON());
+        <div class="hint">Subscribe to get access to the 5-minute market version</div>
+    </div>
 
-  const rest = new REST({ version: '10' }).setToken(TOKEN);
-  try {
-    if (GUILD_ID) {
-      await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-    } else {
-      await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    }
-    console.log('Slash commands registered');
-  } catch (error) {
-    console.error('Failed to register commands:', error);
-  }
-}
-
-function hasRole(member) {
-  return member.roles.cache.has(REQUIRED_ROLE_ID);
-}
-
-client.once('ready', async () => {
-  console.log('Discord bot logged in as ' + client.user.tag);
-  await registerCommands();
-});
-
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  try {
-    const { commandName, user, member } = interaction;
-    if (commandName === 'getaccess') {
-      if (!hasRole(member)) {
-        await interaction.reply({ content: 'You need the **Subscriber** role to access this.', ephemeral: true });
-        return;
-      }
-      const { code, isNew } = getOrCreateUser(user.id, user.username);
-      await interaction.reply({
-        content: isNew
-          ? '**Your access code:**\n\n`' + code + '`\n\nEnter this on the website to log in. Use `/mycode` to see it again.'
-          : '**Your access code:**\n\n`' + code + '`\n\nSame code as before.',
-        ephemeral: true
-      });
-      return;
-    }
-    if (commandName === 'mycode') {
-      if (!hasRole(member)) {
-        await interaction.reply({ content: 'You need the **Subscriber** role.', ephemeral: true });
-        return;
-      }
-      const { code } = getOrCreateUser(user.id, user.username);
-      await interaction.reply({ content: 'Your code: `' + code + '`', ephemeral: true });
-      return;
-    }
-    if (commandName === 'revoke') {
-      if (!member.permissions.has('Administrator')) {
-        await interaction.reply({ content: 'You need Administrator permission.', ephemeral: true });
-        return;
-      }
-      const targetUser = interaction.options.getUser('user');
-      const revoked = revokeUser(targetUser.id);
-      await interaction.reply({
-        content: revoked ? 'Access revoked for **' + targetUser.username + '**.' : 'No active access found.',
-        ephemeral: true
-      });
-      return;
-    }
-  } catch (error) {
-    console.error('Command error:', error);
-    if (!interaction.replied) {
-      await interaction.reply({ content: 'Something went wrong.', ephemeral: true }).catch(() => {});
-    }
-  }
-});
-
-client.on('guildMemberRemove', (member) => {
-  revokeUser(member.id);
-});
-
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled rejection:', error);
-});
-
-client.login(TOKEN);
+    <script>
+        fetch('/api/me').then(r=>{if(r.ok)window.location.href='/app'});
+        const inp=document.getElementById('code');
+        inp.addEventListener('input',e=>{let v=e.target.value.replace(/[^A-Za-z0-9]/g,'').toUpperCase();if(v.length>4)v=v.slice(0,4)+'-'+v.slice(4,8);e.target.value=v});
+        inp.addEventListener('keydown',e=>{if(e.key==='Enter')verify()});
+        async function verify(){const btn=document.getElementById('btn'),err=document.getElementById('err'),code=inp.value.trim();if(!code){showErr('Please enter your code');return}btn.disabled=true;btn.textContent='Verifying...';err.innerHTML='&nbsp;';try{const res=await fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});const data=await res.json();if(res.ok&&data.success){btn.textContent='Welcome, '+data.username+'!';btn.style.background='#22c55e';setTimeout(()=>window.location.href='/app',800)}else{showErr(data.error||'Invalid code');btn.disabled=false;btn.textContent='Unlock Pro'}}catch(e){showErr('Connection error');btn.disabled=false;btn.textContent='Unlock Pro'}}
+        function showErr(msg){document.getElementById('err').textContent=msg;document.getElementById('field').classList.add('shake');setTimeout(()=>document.getElementById('field').classList.remove('shake'),350);inp.value=''}
+    </script>
+</body>
+</html>
