@@ -1428,23 +1428,29 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
+    // Immediately capture PTB for new slot — don't wait for startPtbTimer (race condition fix)
+    const newPtb=latestChainlinkPrice||price;
+    m.priceToBeat=newPtb;
+    if(tf===5)savePtb(newPtb);
+    console.log('🎯 PTB captured on slot change ['+tf+'m]: $'+newPtb.toFixed(2));
   }
   if(m.currentSlot!==currentSlot){
-    const isFirstDetection=m.currentSlot===null;
     m.currentSlot=currentSlot;
-    // PTB is set by the 5-minute timer (startPtbTimer)
-    // Only set for non-5m timeframes here
-    if(tf!==5){
+    // On first detection (startup), set PTB if not already loaded from cache
+    if(m.priceToBeat===null){
       m.priceToBeat=latestChainlinkPrice||price;
+      if(tf===5)savePtb(m.priceToBeat);
     }
   }
 });
 // Track position vs PTB every tick
 const activeM=getActiveMarket();
 if(activeM.priceToBeat)trackPosition(price,activeM.priceToBeat);
+await updateDisplay(price,vl);
 // Refresh candles and buy/sell data every 60 seconds
-if(extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
-await updateDisplay(price,vl)}catch(e){console.error('❌ updatePrice error:',e)}}
+// extUpdateCount is incremented inside updateExt (called by updateDisplay), so check AFTER
+if(extUpdateCount>0&&extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
+}catch(e){console.error('❌ updatePrice error:',e)}}
 
 async function refreshCandles(){
   try{
@@ -1469,12 +1475,17 @@ try{
   }
 }catch(e){}
 // Set initial slots and PTB for all markets
-const price=latestBtcPrice||priceHistory.length?priceHistory[priceHistory.length-1].price:0;
+const latestP=latestBtcPrice||(priceHistory.length?priceHistory[priceHistory.length-1].price:0);
 const now=new Date();
 [5,15,60].forEach(tf=>{
   markets[tf].currentSlot=getSlot(tf,now);
-  // Don't set PTB on startup — wait for Chainlink boundary capture
-  // PTB will be set when the next slot boundary is detected by the WebSocket handler
+  // Set PTB from cached value (loaded by loadPtb() at startup) or fall back to current price
+  // This ensures PTB is available immediately on page load, not dependent on a slot boundary
+  if(!markets[tf].priceToBeat&&latestP){
+    markets[tf].priceToBeat=latestP;
+    if(tf===5)savePtb(latestP);
+    console.log('🎯 PTB initialised from current price ['+tf+'m]: $'+latestP.toFixed(2));
+  }
 });
 document.getElementById('status').textContent='Running — 200+ data points loaded';
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
