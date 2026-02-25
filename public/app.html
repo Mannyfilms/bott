@@ -192,11 +192,6 @@
         <div id="signalPerformance"></div>
     </div>
 
-    <div class="card">
-        <div class="ct">History</div>
-        <div class="hist" id="history"><div style="text-align:center;padding:16px;color:var(--tx3);font-size:.8em">No predictions yet</div></div>
-    </div>
-
     <!-- HOW IT WORKS -->
     <div class="card">
         <div class="ct">How Our Predictions Work</div>
@@ -1211,7 +1206,9 @@ const timeConf=dominance*15; // more time on one side = more confident
 const confidence=Math.max(85,Math.min(98,85+gapConf+timeConf)).toFixed(1);
 
 let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
-try{feat=extractFeat(prices,volumes);const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];mp=await getMP(feat,sf)}catch(e){console.log('⚠️ Feature extraction failed (ok):',e.message)}
+try{feat=extractFeat(prices,volumes)}catch(e){console.log('⚠️ Feature extraction failed (ok):',e.message)}
+// ML model predictions run in background, don't block
+try{const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];getMP(feat,sf).then(r=>{mp=r}).catch(()=>{})}catch(e){}
 const cp2=detectPat(jp);
 
 console.log('📊 Above: '+Math.round(abovePct*100)+'% | Gap: $'+gap.toFixed(0)+' | → '+(prediction?'YES':'NO'));
@@ -1430,11 +1427,12 @@ function checkPrediction(np){
   m.currentPrediction=null;
 }
 function updateStats(){document.getElementById('totalPredictions').textContent=stats.total;document.getElementById('correctPredictions').textContent=stats.correct;document.getElementById('accuracyRate').textContent=(stats.total?(stats.correct/stats.total*100).toFixed(1):0)+'%';document.getElementById('highConfAccuracy').textContent=(stats.highConfPredictions?(stats.highConfCorrect/stats.highConfPredictions*100).toFixed(1):0)+'%';document.getElementById('winStreak').textContent=stats.currentStreak;document.getElementById('skippedCount').textContent=stats.skipped}
-function updateHistoryDisplay(){const el=document.getElementById('history');if(!predictionHistory.length){el.innerHTML='<div style="text-align:center;padding:16px;color:var(--tx3);font-size:.8em">No predictions yet</div>';return}el.innerHTML=predictionHistory.map(h=>'<div class="hitem"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+h.targetTime+'</span><span class="'+(h.correct?'correct':'incorrect')+'">'+(h.correct?'&#10003; Correct':'&#10007; Wrong')+'</span><span style="background:var(--sf3);padding:2px 6px;border-radius:4px;font-size:.75em">'+h.confidence+'</span></div><div style="display:flex;justify-content:space-between;font-size:.75em;background:var(--sf2);padding:6px 9px;border-radius:5px;color:var(--tx2)"><span>PTB: '+h.priceToBeat+'</span><span>'+h.actualPrice+'</span><span>'+h.predicted+'</span></div>'+(h.pattern?'<div style="font-size:.72em;color:var(--btc);margin-top:4px">'+h.pattern+'</div>':'')+'</div>').join('')}
+function updateHistoryDisplay(){}
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-async function updatePrice(){try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
+let _updateRunning=false;
+async function updatePrice(){if(_updateRunning){console.log('⏩ updatePrice already running, skipping');return}_updateRunning=true;try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
 // Store with OHLC data from live ticks
 const last=priceHistory.length?priceHistory[priceHistory.length-1]:null;
 priceHistory.push({price,volume:vl,timestamp:now.getTime(),
@@ -1476,7 +1474,7 @@ await updateDisplay(price,vl);
 // extUpdateCount is incremented inside updateExt (called by updateDisplay), so check AFTER
 if(extUpdateCount>0&&extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
 lastTickTime=Date.now();consecutiveErrors=0;
-}catch(e){console.error('❌ updatePrice error:',e);consecutiveErrors++;if(consecutiveErrors>3){console.warn('🐕 '+consecutiveErrors+' consecutive errors — attempting recovery');try{resetPredictionLock();resetPositionHistory()}catch(re){}}}}
+}catch(e){console.error('❌ updatePrice error:',e);consecutiveErrors++;if(consecutiveErrors>3){console.warn('🐕 '+consecutiveErrors+' consecutive errors — attempting recovery');try{resetPredictionLock();resetPositionHistory()}catch(re){}}}finally{_updateRunning=false}}
 
 async function refreshCandles(){
   try{
