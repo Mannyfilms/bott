@@ -144,7 +144,7 @@
     </div>
     <div class="disc" style="background:rgba(247,181,56,.08);border-color:rgba(247,181,56,.25);color:#d4a017">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        Please keep this tab open &mdash; switching away or minimising may cause the Price to Beat to slowly become inaccurate.
+        Please keep this tab open &mdash; switching away or minimising may delay price updates from the WebSocket feed.
     </div>
 
     <div class="card">
@@ -494,32 +494,9 @@ async function loadPtb(){
 }
 loadPtb();
 
-function startPtbTimer(){
-  const now=Date.now();
-  const slotMs=300000;
-  const nextBoundary=Math.ceil(now/slotMs)*slotMs;
-  const delay=nextBoundary-now;
-  
-  console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
-  
-  setTimeout(()=>{
-    const ptbPrice=latestChainlinkPrice||latestBtcPrice;
-    if(ptbPrice&&markets[5]){
-      markets[5].priceToBeat=ptbPrice;
-      savePtb(ptbPrice);
-      console.log('🎯 PTB SET: $'+ptbPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
-    }
-    setInterval(()=>{
-      const p=latestChainlinkPrice||latestBtcPrice;
-      if(p&&markets[5]){
-        markets[5].priceToBeat=p;
-        savePtb(p);
-        console.log('🎯 PTB SET: $'+p.toFixed(2)+' at '+new Date().toLocaleTimeString());
-      }
-    },slotMs);
-  },delay);
-}
-startPtbTimer();
+// PTB is now captured exclusively by slot change detection in updatePrice().
+// The old startPtbTimer() used setTimeout/setInterval which drifted over time
+// and overwrote the correct PTB with a stale price. Removed to fix PTB accuracy bug.
 
 function connectPolyWs(){
   try{
