@@ -494,21 +494,50 @@ async function loadPtb(){
 }
 loadPtb();
 
-// ═══ PRECISE PTB TIMER (5-min only) — fires at exact boundary ═══
-// Self-correcting setTimeout (no setInterval drift). Chainlink-only.
+// ═══ PTB: Fetch real PTB from Polymarket API, fallback to Chainlink ═══
+async function fetchRealPtb(){
+  try{
+    const r=await fetch('/api/polymarket-ptb');
+    const data=await r.json();
+    if(!data||!data.allMarketFields)return null;
+    const f=data.allMarketFields;
+    // Try known field names where PTB might live
+    for(const key of ['startPrice','strikePrice','openPrice','referencePrice','priceToBeat']){
+      if(f[key]){const v=parseFloat(f[key]);if(v>50000&&v<200000)return v}
+    }
+    // Try parsing from description/question/title
+    const allText=[f.description,f.question,data.eventTitle,data.eventDescription].filter(Boolean).join(' ');
+    const match=allText.match(/\$([\d,]+\.?\d*)/);
+    if(match){const v=parseFloat(match[1].replace(/,/g,''));if(v>50000&&v<200000)return v}
+    // Log all fields so we can find it
+    console.log('🔍 Polymarket fields (looking for PTB):',Object.keys(f).filter(k=>typeof f[k]==='number'||/^\d/.test(f[k])).map(k=>k+'='+f[k]).join(', '));
+  }catch(e){console.log('⚠️ fetchRealPtb error:',e.message)}
+  return null;
+}
+
+// Self-correcting timer — fires at exact 5-min boundary
 function schedulePtbCapture(){
   const now=Date.now(),slotMs=300000;
   const nextBoundary=Math.ceil(now/slotMs)*slotMs;
-  setTimeout(()=>{
-    const fresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-    if(fresh&&markets[5]){
-      markets[5].priceToBeat=latestChainlinkPrice;
-      savePtb(latestChainlinkPrice);
-      console.log('🎯 PTB SET at boundary: $'+latestChainlinkPrice.toFixed(2)+' (Chainlink)');
+  setTimeout(async()=>{
+    // Try Polymarket API first (exact match to their site)
+    const polyPtb=await fetchRealPtb();
+    if(polyPtb&&markets[5]){
+      markets[5].priceToBeat=polyPtb;
+      savePtb(polyPtb);
+      console.log('🎯 PTB from Polymarket: $'+polyPtb.toFixed(2));
     }else{
-      console.log('⏳ Chainlink stale at boundary — slot change detection will handle PTB');
+      // Fallback to Chainlink WebSocket
+      const fresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+      if(fresh&&markets[5]){
+        markets[5].priceToBeat=latestChainlinkPrice;
+        savePtb(latestChainlinkPrice);
+        console.log('🎯 PTB from Chainlink (fallback): $'+latestChainlinkPrice.toFixed(2));
+      }else{
+        console.log('⏳ No PTB source available at boundary');
+      }
     }
-    schedulePtbCapture(); // re-schedule with fresh delay calc
+    schedulePtbCapture();
   },nextBoundary-now);
 }
 schedulePtbCapture();
