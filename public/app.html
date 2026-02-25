@@ -1434,7 +1434,7 @@ function updateHistoryDisplay(){const el=document.getElementById('history');if(!
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-async function updatePrice(){try{lastTickTime=Date.now();const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
+async function updatePrice(){try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
 // Store with OHLC data from live ticks
 const last=priceHistory.length?priceHistory[priceHistory.length-1]:null;
 priceHistory.push({price,volume:vl,timestamp:now.getTime(),
@@ -1443,11 +1443,12 @@ priceHistory.push({price,volume:vl,timestamp:now.getTime(),
 if(priceHistory.length>500)priceHistory.shift();
 // Update ALL markets independently using slot detection
 [5,15,60].forEach(tf=>{
+  try{
   const m=markets[tf];
   const currentSlot=getSlot(tf,now);
   if(m.currentSlot!==null&&m.currentSlot!==currentSlot){
     console.log('🔄 SLOT CHANGE ['+tf+'m]: '+m.currentSlot+' → '+currentSlot+' | hasPred: '+(!!m.currentPrediction)+' | selected: '+(tf===selectedTimeframe));
-    if(m.currentPrediction&&tf===selectedTimeframe)checkPrediction(price);
+    if(m.currentPrediction&&tf===selectedTimeframe){try{checkPrediction(price)}catch(cpErr){console.error('❌ checkPrediction error:',cpErr)}}
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
@@ -1465,6 +1466,7 @@ if(priceHistory.length>500)priceHistory.shift();
       if(tf===5)savePtb(m.priceToBeat);
     }
   }
+  }catch(slotErr){console.error('❌ Slot update error ['+tf+'m]:',slotErr)}
 });
 // Track position vs PTB every tick
 const activeM=getActiveMarket();
@@ -1473,7 +1475,8 @@ await updateDisplay(price,vl);
 // Refresh candles and buy/sell data every 60 seconds
 // extUpdateCount is incremented inside updateExt (called by updateDisplay), so check AFTER
 if(extUpdateCount>0&&extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
-}catch(e){console.error('❌ updatePrice error:',e)}}
+lastTickTime=Date.now();consecutiveErrors=0;
+}catch(e){console.error('❌ updatePrice error:',e);consecutiveErrors++;if(consecutiveErrors>3){console.warn('🐕 '+consecutiveErrors+' consecutive errors — attempting recovery');try{resetPredictionLock();resetPositionHistory()}catch(re){}}}}
 
 async function refreshCandles(){
   try{
@@ -1533,7 +1536,7 @@ startPredictions();
 // ═══ VISIBILITY RECOVERY ═══
 // Browsers throttle/pause setInterval when the tab is hidden.
 // When the user comes back, force an immediate update and re-sync the interval.
-let lastTickTime=Date.now();
+let lastTickTime=Date.now(),consecutiveErrors=0;
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&isRunning){
     const gap=Date.now()-lastTickTime;
@@ -1553,18 +1556,18 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 // ═══ WATCHDOG ═══
-// If updatePrice somehow stops ticking (unhandled exception, memory issue, etc.),
-// this watchdog detects it and restarts the interval.
+// Detects when updatePrice stops completing successfully and restarts
 setInterval(()=>{
   if(!isRunning)return;
   const staleSec=(Date.now()-lastTickTime)/1000;
-  if(staleSec>30){
-    console.warn('🐕 Watchdog: no tick for '+staleSec.toFixed(0)+'s — restarting interval');
+  if(staleSec>20){
+    console.warn('🐕 Watchdog: no successful tick for '+staleSec.toFixed(0)+'s — restarting');
+    consecutiveErrors=0;
     clearInterval(updateInterval);
     updatePrice();
     updateInterval=setInterval(updatePrice,5e3);
   }
-},15000);
+},10000);
 </script>
 </body>
 </html>
