@@ -575,6 +575,15 @@ async function fetchPolymarketOdds(){
       polymarketOdds.downPrice=data.downPrice;
       polymarketOdds.lastFetch=Date.now();
     }
+    // Use Polymarket's real PTB if available (exact match to their site)
+    if(data.ptb&&data.ptb>50000&&data.ptb<200000){
+      const m=markets[5];
+      if(m&&m.priceToBeat!==data.ptb){
+        m.priceToBeat=data.ptb;
+        savePtb(data.ptb);
+        console.log('🎯 PTB from Polymarket API: $'+data.ptb.toFixed(2));
+      }
+    }
   }catch(e){}
 }
 // Fetch every 10 seconds — this is our most valuable signal
