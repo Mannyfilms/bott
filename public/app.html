@@ -298,6 +298,16 @@ function resetPredictionLock(){
   predictionLock={locked:false,direction:null,lockPrice:null,lockTime:null,lockPtb:null,overrideThreshold:100};
   ptbTracker={aboveCount:0,belowCount:0,totalChecks:0,lastSlot:null,prices:[],firstPrice:null};
   try{localStorage.removeItem('predLock5m');localStorage.removeItem('currentPred5m')}catch(e){}
+  // Reset prediction UI so stale lock/skip state doesn't persist
+  try{
+    const pb=document.getElementById('predictionDisplay');
+    if(pb){pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';}
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ New slot — analyzing...</div>';
+    document.getElementById('predictionConfidence').textContent='';
+    document.getElementById('predictionDetails').textContent='Collecting position data...';
+    document.getElementById('confidenceMeter').style.width='0%';
+    document.getElementById('confPercent').textContent='--';
+  }catch(e){}
 }
 
 // Track how long price stays above/below PTB within a slot
@@ -1187,7 +1197,7 @@ return{willBeat:prediction,confidence:confidence,signals:sigs,modelPredictions:m
 catch(e){console.log('❌ makePred error:',e);return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]}}}
 
 // ═══ DISPLAY ═══
-async function updateDisplay(price,volume){
+async function updateDisplay(price,volume){try{
 document.getElementById('currentPrice').textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 document.getElementById('lastUpdate').textContent='Updated '+new Date().toLocaleTimeString();
 if(getActiveMarket().priceToBeat){const ptb=getActiveMarket().priceToBeat;document.getElementById('priceToBeat').textContent='$'+ptb.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});const d=price-ptb,p=(d/ptb*100).toFixed(3);document.getElementById('vsComparison').innerHTML=d>0?'<span style="color:var(--up)">+$'+d.toFixed(2)+' (+'+p+'%)</span>':'<span style="color:var(--dn)">$'+d.toFixed(2)+' ('+p+'%)</span>'}
@@ -1286,7 +1296,7 @@ document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1e
 document.getElementById('predictionConfidence').textContent='Confidence: '+displayConf+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=displayConf+'%';document.getElementById('confPercent').textContent=displayConf+'%';const cf=parseFloat(displayConf);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
 ['model1','model2','model3'].forEach((id,i)=>{const k=['lstm','technical','hybrid'][i],v=pred.modelPredictions[k];document.getElementById(id+'Pred').textContent=v>.5?'UP ↑':'DOWN ↓';document.getElementById(id+'Pred').style.color=v>.5?'var(--up)':'var(--dn)';document.getElementById(id+'Conf').textContent=(v*100).toFixed(1)+'%'});
 if(pred.pattern){document.getElementById('patternSection').style.display='block';document.getElementById('patternName').textContent=pred.pattern.pattern+' — '+pred.pattern.signal}else document.getElementById('patternSection').style.display='none';
-displaySignals(pred.signals);updateCountdown()}}
+displaySignals(pred.signals);updateCountdown()}}catch(e){console.error('❌ updateDisplay error:',e)}}
 function displaySignals(sigs){const el=document.getElementById('signalList');if(!sigs||!sigs.length){el.innerHTML='<span style="color:var(--tx3)">Waiting&hellip;</span>';return}el.innerHTML=sigs.map(s=>{let c='';if(s.signal.includes('BULLISH'))c='sig-u';if(s.signal.includes('BEARISH'))c='sig-d';return'<div class="sig '+c+'"><span><strong>'+s.name+'</strong></span><span style="color:var(--tx2)">'+s.signal+(s.probability?' ('+s.probability+')':'')+'</span><span style="color:var(--tx3)">'+s.strength.toFixed(2)+'</span></div>'}).join('')}
 function updateCountdown(){const end=getSlotEnd(selectedTimeframe);const tl=end-new Date();if(tl<=0){document.getElementById('status').textContent='Checking prediction...';return}const labels={5:'5m',15:'15m',60:'1h'};document.getElementById('status').textContent=labels[selectedTimeframe]+' Next: '+fmt(end)+' ('+Math.floor(tl/6e4)+'m '+Math.floor(tl%6e4/1e3)+'s)'}
 
@@ -1401,7 +1411,7 @@ function updateHistoryDisplay(){const el=document.getElementById('history');if(!
 function updateSignalPerformance(){const el=document.getElementById('signalPerformance'),k=Object.keys(signalPerformance);if(!k.length){el.innerHTML='<div style="text-align:center;color:var(--tx3);font-size:.8em">Collecting&hellip;</div>';return}el.innerHTML=k.map(s=>{const p=signalPerformance[s];return'<div class="prow"><span style="font-weight:500">'+s+'</span><span style="font-family:JetBrains Mono,monospace;font-size:.82em">'+p.correct+'/'+p.total+' ('+(p.correct/p.total*100).toFixed(1)+'%)</span></div>'}).join('')}
 
 // ═══ MAIN ═══
-async function updatePrice(){const price=await fetchBTCPrice(),vl=getVolume(),now=new Date;
+async function updatePrice(){try{const price=await fetchBTCPrice();if(!price||isNaN(price)){console.log('⚠️ No price, skipping tick');return}const vl=getVolume(),now=new Date;
 // Store with OHLC data from live ticks
 const last=priceHistory.length?priceHistory[priceHistory.length-1]:null;
 priceHistory.push({price,volume:vl,timestamp:now.getTime(),
@@ -1434,7 +1444,7 @@ const activeM=getActiveMarket();
 if(activeM.priceToBeat)trackPosition(price,activeM.priceToBeat);
 // Refresh candles and buy/sell data every 60 seconds
 if(extUpdateCount%12===0){fetchTakerVolume();refreshCandles()}
-await updateDisplay(price,vl)}
+await updateDisplay(price,vl)}catch(e){console.error('❌ updatePrice error:',e)}}
 
 async function refreshCandles(){
   try{
