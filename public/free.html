@@ -130,6 +130,9 @@ let sentimentData={fearGreed:50,funding:0,sentiment:'NEUTRAL'};
 let ptbHour=-1;
 
 // ═══ PERSIST LOCKED PREDICTION ACROSS RELOADS ═══
+// Enhanced: server lock is the SINGLE SOURCE OF TRUTH.
+// The first user to lock a prediction sets it for everyone.
+// All other users poll the server and adopt that prediction.
 function saveLock(){
   if(!locked||!prediction)return;
   const data={hour:new Date().getUTCHours(),prediction,ts:Date.now()};
@@ -139,22 +142,24 @@ function saveLock(){
 }
 async function loadLock(){
   const hour=new Date().getUTCHours();
-  // Try localStorage first (fastest)
-  try{
-    const d=JSON.parse(localStorage.getItem('pred_lock_hourly'));
-    if(d&&d.hour===hour&&d.prediction&&(Date.now()-d.ts)<3600000){
-      locked=true;prediction=d.prediction;
-      console.log('📌 Restored locked prediction from local cache: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
-      return true;
-    }
-  }catch(e){}
-  // Try server (syncs across browsers)
+  // Try server FIRST (single source of truth for all users)
   try{
     const r=await fetch('/api/pred-lock-hourly');const d=await r.json();
     if(d&&d.hour===hour&&d.prediction){
       locked=true;prediction=d.prediction;
-      localStorage.setItem('pred_lock_hourly',JSON.stringify(d));
-      console.log('📌 Restored locked prediction from server: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      try{localStorage.setItem('pred_lock_hourly',JSON.stringify(d))}catch(e){}
+      console.log('📌 Loaded server prediction: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      updatePredDisplay();
+      return true;
+    }
+  }catch(e){}
+  // Fallback to localStorage (offline/server down)
+  try{
+    const d=JSON.parse(localStorage.getItem('pred_lock_hourly'));
+    if(d&&d.hour===hour&&d.prediction&&(Date.now()-d.ts)<3600000){
+      locked=true;prediction=d.prediction;
+      console.log('📌 Restored from local cache: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      updatePredDisplay();
       return true;
     }
   }catch(e){}
@@ -164,6 +169,25 @@ function clearLock(){
   try{localStorage.removeItem('pred_lock_hourly')}catch(e){}
 }
 loadLock();
+
+// ── Poll server for lock every 15s while not locked ──
+// This ensures late-joining users pick up the first user's prediction quickly.
+setInterval(async()=>{
+  if(locked)return; // already have a prediction, no need to poll
+  try{
+    const hour=new Date().getUTCHours();
+    const r=await fetch('/api/pred-lock-hourly');const d=await r.json();
+    if(d&&d.hour===hour&&d.prediction){
+      locked=true;prediction=d.prediction;
+      try{localStorage.setItem('pred_lock_hourly',JSON.stringify(d))}catch(e){}
+      console.log('📌 Picked up server prediction: '+(prediction.willBeat?'YES':'NO')+' ('+prediction.confidence+'%)');
+      updatePredDisplay();
+      document.getElementById('waitBarWrap').style.display='none';
+      document.getElementById('lockInfo').style.display='none';
+      document.getElementById('status').textContent='🔒 Prediction locked — checking at '+getHourEnd().toLocaleTimeString();
+    }
+  }catch(e){}
+},15000);
 
 // ═══ INDICATORS (same as pro version) ═══
 function sma(d,p){if(d.length<p)return null;return d.slice(-p).reduce((a,b)=>a+b,0)/p}
@@ -377,50 +401,14 @@ function connectBtcWs(){
 }
 connectPolyWs();connectBtcWs();
 
-// ═══ DETERMINISTIC PRICE HISTORY VIA KLINE WEBSOCKET ═══
-// Instead of recording random live ticks (which differ per user based on load time),
-// we use Binance's 1-minute kline WebSocket. Every user receives the same candle
-// close price at the same wall-clock minute — fully deterministic.
-// The @kline_1m stream uses the same wss://stream.binance.com domain as the
-// existing btcusdt@trade WS which already works on this site.
-
-let klineWs=null;
-let klineBuffer=null; // holds the latest in-progress candle close price
-
-function connectKlineWs(){
-  try{
-    klineWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
-    klineWs.onmessage=function(e){
-      try{
-        const d=JSON.parse(e.data);
-        if(!d.k)return;
-        // Always track latest close price from the in-progress candle
-        klineBuffer=parseFloat(d.k.c);
-        if(d.k.x){ // x=true → candle is finalized/closed
-          const closePrice=parseFloat(d.k.c);
-          if(closePrice>0){
-            priceHistory.push(closePrice);
-            if(priceHistory.length>500)priceHistory.shift();
-            console.log('🕯️ Kline 1m closed: $'+closePrice.toFixed(2)+' | history: '+priceHistory.length+' candles');
-          }
-        }
-      }catch(ex){}
-    };
-    klineWs.onclose=function(){setTimeout(connectKlineWs,3000)};
-    klineWs.onerror=function(){klineWs.close()};
-  }catch(e){setTimeout(connectKlineWs,5000)}
-}
-connectKlineWs();
-
-// OLD recordPrice — now a no-op for priceHistory.
-// Live WS ticks still update btcPrice/displayPrice for the UI,
-// but prediction history is exclusively from kline candle closes.
+// Record price into history (sample ~every 5s, keep 500 points = ~40min of 5s ticks)
 let lastRecordTime=0;
 function recordPrice(p){
   const now=Date.now();
-  if(now-lastRecordTime<4000)return;
+  if(now-lastRecordTime<4000)return; // throttle to ~5s
   lastRecordTime=now;
-  // Prediction data comes from kline WS — don't mix in random ticks
+  priceHistory.push(p);
+  if(priceHistory.length>500)priceHistory.shift();
 }
 
 // ═══ PTB MANAGEMENT ═══
@@ -463,7 +451,7 @@ function startPtbTimer(){
   setTimeout(async()=>{
     async function captureHourly(){
       locked=false;prediction=null;clearLock();ptbHour=new Date().getUTCHours();ptbSetAt=new Date();
-      priceHistory=[];klineBuffer=null; // reset price history for new hour's prediction
+      priceHistory=[]; // reset price history for new hour's prediction
       document.getElementById('predDisplay').className='pred pred-nu';
       document.getElementById('predValue').textContent='--';
       document.getElementById('predConf').textContent='New hour — gathering signals...';
@@ -552,20 +540,37 @@ function updateUI(){
     return;
   }
 
+  // ── Before computing locally, check if another user already locked on server ──
+  // This is a non-blocking check — the 15s polling interval handles it too,
+  // but this catches it faster during the 5s update loop.
+  if(!locked&&!window._serverCheckInFlight){
+    window._serverCheckInFlight=true;
+    const hour=new Date().getUTCHours();
+    fetch('/api/pred-lock-hourly').then(r=>r.json()).then(d=>{
+      if(d&&d.hour===hour&&d.prediction&&!locked){
+        locked=true;prediction=d.prediction;
+        try{localStorage.setItem('pred_lock_hourly',JSON.stringify(d))}catch(e){}
+        console.log('📌 Server prediction found during update: '+(prediction.willBeat?'YES':'NO'));
+        updatePredDisplay();
+        document.getElementById('waitBarWrap').style.display='none';
+        document.getElementById('lockInfo').style.display='none';
+        document.getElementById('status').textContent='🔒 Prediction locked — checking at '+getHourEnd().toLocaleTimeString();
+      }
+    }).catch(()=>{}).finally(()=>{window._serverCheckInFlight=false});
+  }
+
   if(!ptb){
     document.getElementById('status').textContent='⏳ Waiting for PTB at next hour mark ('+mins+'m '+secs+'s)';
     return;
   }
 
   // Need enough price history to compute indicators
-  // Require at least 26 candles (for MACD-26) — 1 candle per minute from kline WS.
-  // If user loads mid-hour, they must wait for candles to accumulate.
-  // This is intentional: it guarantees every user runs indicators on
-  // the SAME data, producing the SAME prediction.
+  // Require at least 26 samples (for MACD) — at 5s each that's ~2 minutes
   if(priceHistory.length<26){
     const needed=26-priceHistory.length;
-    const klineInfo=klineBuffer?' | Live: $'+klineBuffer.toFixed(0):'';
-    document.getElementById('status').textContent='Collecting 1m candles — '+priceHistory.length+'/26 (~'+needed+'m remaining)'+klineInfo;    // Show wait bar
+    const secsNeeded=needed*5;
+    document.getElementById('status').textContent='Collecting data — '+priceHistory.length+'/26 samples ('+Math.ceil(secsNeeded/60)+'m '+secsNeeded%60+'s)';
+    // Show wait bar
     document.getElementById('waitBarWrap').style.display='block';
     document.getElementById('lockInfo').style.display='none';
     const pct=Math.round(priceHistory.length/26*100);
@@ -664,7 +669,7 @@ function renderSignals(sigs){
 setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<5){
-    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];klineBuffer=null;
+    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];
     document.getElementById('predDisplay').className='pred pred-nu';
     document.getElementById('predValue').textContent='--';
     document.getElementById('predConf').textContent='New hour starting...';
