@@ -487,6 +487,239 @@ app.get('/api/polymarket-odds', async (req, res) => {
   }
 });
 
+// ═══ HOURLY PREDICTION LOCK (public — for free tier) ═══
+// Single source of truth: first prediction to lock sets it for ALL users.
+let serverHourlyPredLock = { hour: -1, prediction: null, ts: 0 };
+
+app.post('/api/pred-lock-hourly', (req, res) => {
+  const { hour, prediction, ts } = req.body;
+  const currentHour = new Date().getUTCHours();
+  if (hour === currentHour && prediction) {
+    // Only accept if no prediction is locked yet for this hour
+    if (serverHourlyPredLock.hour !== currentHour) {
+      serverHourlyPredLock = { hour, prediction, ts: ts || Date.now() };
+      console.log('🔒 Hourly prediction locked: ' + (prediction.willBeat ? 'YES' : 'NO') + ' (' + prediction.confidence + '%)');
+    }
+  }
+  res.json({ ok: true });
+});
+
+app.get('/api/pred-lock-hourly', (req, res) => {
+  const currentHour = new Date().getUTCHours();
+  if (serverHourlyPredLock.hour === currentHour && serverHourlyPredLock.prediction) {
+    return res.json(serverHourlyPredLock);
+  }
+  res.json({ hour: null, prediction: null });
+});
+
+// ═══ SERVER-SIDE AUTO-PREDICTION (runs every hour, no visitors needed) ═══
+// Fetches Binance 1m klines server-side (no CORS issues), runs the same
+// technical indicators as the frontend, and locks the prediction automatically.
+
+// -- Technical indicator functions (mirrors frontend exactly) --
+function serverSma(d,p){if(d.length<p)return null;return d.slice(-p).reduce((a,b)=>a+b,0)/p}
+function serverEma(d,p){if(d.length<p)return null;const k=2/(p+1);let e=serverSma(d.slice(0,p),p);for(let i=p;i<d.length;i++)e=d[i]*k+e*(1-k);return e}
+function serverRsi(d,p=14){if(d.length<p+1)return null;const c=[];for(let i=1;i<d.length;i++)c.push(d[i]-d[i-1]);const r=c.slice(-p),g=r.filter(x=>x>0),l=r.filter(x=>x<0).map(Math.abs);const ag=g.length?g.reduce((a,b)=>a+b,0)/p:0,al=l.length?l.reduce((a,b)=>a+b,0)/p:0;if(!al)return 100;return 100-100/(1+ag/al)}
+function serverMacd(d){if(d.length<26)return null;const m=serverEma(d,12)-serverEma(d,26);return{value:m,bullish:m>0}}
+function serverBb(d,p=20){if(d.length<p)return null;const s=serverSma(d,p),sl=d.slice(-p),v=sl.reduce((a,x)=>a+Math.pow(x-s,2),0)/p,st=Math.sqrt(v);return{upper:s+st*2,lower:s-st*2,mid:s}}
+
+function serverEmaCrossover(prices){
+  if(prices.length<25)return null;
+  const e9=serverEma(prices,9),e21=serverEma(prices,21);
+  const e9p=serverEma(prices.slice(0,-1),9),e21p=serverEma(prices.slice(0,-1),21);
+  if(!e9||!e21||!e9p||!e21p)return null;
+  return{crossUp:e9p<=e21p&&e9>e21,crossDown:e9p>=e21p&&e9<e21,bullish:e9>e21}
+}
+
+function serverStochRsi(prices,rp=14,sp=14){
+  if(prices.length<rp+sp)return null;
+  const rs=[];
+  for(let i=rp;i<=prices.length;i++){
+    const sl=prices.slice(i-rp-1,i);let g=0,l=0;
+    for(let j=1;j<sl.length;j++){const d=sl[j]-sl[j-1];if(d>0)g+=d;else l-=d}
+    rs.push(100-(100/(1+g/Math.max(l,0.001))));
+  }
+  if(rs.length<sp)return null;
+  const rec=rs.slice(-sp),mn=Math.min(...rec),mx=Math.max(...rec);
+  if(mx===mn)return{k:50,signal:'NEUTRAL'};
+  const k=(rs[rs.length-1]-mn)/(mx-mn)*100;
+  return{k,signal:k>80?'OVERBOUGHT':k<20?'OVERSOLD':k>50?'BULLISH':'BEARISH'}
+}
+
+function serverPriceVelocity(prices){
+  if(prices.length<10)return null;
+  const v1=(prices[prices.length-1]-prices[prices.length-4])/3;
+  const v2=(prices[prices.length-5]-prices[prices.length-8])/3;
+  const acc=v1-v2;
+  return{velocity:v1,acceleration:acc,
+    signal:v1>0&&acc>0?'ACCELERATING UP':v1<0&&acc<0?'ACCELERATING DOWN':
+           v1>0&&acc<0?'DECELERATING UP':v1<0&&acc>0?'DECELERATING DOWN':'NEUTRAL'}
+}
+
+function serverMakePrediction(prices, ptbPrice){
+  if(prices.length<26)return null;
+
+  let bullScore=0,bearScore=0;
+
+  // 1. Momentum
+  const vel=serverPriceVelocity(prices);
+  if(vel){
+    if(vel.signal==='ACCELERATING UP')bullScore+=3;
+    else if(vel.signal==='DECELERATING UP')bullScore+=1;
+    else if(vel.signal==='ACCELERATING DOWN')bearScore+=3;
+    else if(vel.signal==='DECELERATING DOWN')bearScore+=1;
+  }
+
+  // 2. RSI
+  const rs=serverRsi(prices);
+  if(rs!==null){
+    if(rs<30)bullScore+=2.5;
+    else if(rs>70)bearScore+=2.5;
+    else if(rs<45)bullScore+=1;
+    else if(rs>55)bearScore+=1;
+  }
+
+  // 3. EMA crossover
+  const ec=serverEmaCrossover(prices);
+  if(ec){
+    if(ec.crossUp)bullScore+=3;
+    else if(ec.crossDown)bearScore+=3;
+    else if(ec.bullish)bullScore+=1.5;
+    else bearScore+=1.5;
+  }
+
+  // 4. MACD
+  const mc=serverMacd(prices);
+  if(mc){
+    if(mc.bullish)bullScore+=1.5;
+    else bearScore+=1.5;
+  }
+
+  // 5. Bollinger Bands
+  const b=serverBb(prices);
+  if(b){
+    const cur=prices[prices.length-1];
+    const pos=(cur-b.lower)/(b.upper-b.lower);
+    if(pos<0.15)bullScore+=2;
+    else if(pos>0.85)bearScore+=2;
+  }
+
+  // 6. Stoch RSI
+  const sr=serverStochRsi(prices);
+  if(sr){
+    if(sr.signal==='OVERSOLD')bullScore+=2;
+    else if(sr.signal==='OVERBOUGHT')bearScore+=2;
+  }
+
+  // 7. Price vs PTB (mild signal for large gaps)
+  if(ptbPrice){
+    const cur=prices[prices.length-1];
+    const gap=Math.abs(cur-ptbPrice);
+    if(gap>200){
+      if(cur>ptbPrice)bullScore+=0.5;
+      else bearScore+=0.5;
+    }
+  }
+
+  const total=bullScore+bearScore||1;
+  const bullPct=bullScore/total;
+  const prediction=bullPct>0.5;
+  const margin=Math.abs(bullPct-0.5)*2;
+  const confidence=Math.round(Math.max(50,Math.min(88,52+margin*36)));
+
+  return{willBeat:prediction,confidence,bullScore,bearScore,margin};
+}
+
+// -- Fetch Binance klines server-side (no CORS) --
+async function fetchServerKlines(){
+  try{
+    const now=new Date();
+    const hourStart=new Date(now);hourStart.setMinutes(0,0,0);
+    const startMs=hourStart.getTime();
+    const resp=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime='+startMs+'&limit=60');
+    if(!resp.ok)throw new Error('HTTP '+resp.status);
+    const klines=await resp.json();
+    return klines.filter(k=>k[0]>=startMs).map(k=>parseFloat(k[4])); // close prices
+  }catch(e){
+    console.warn('⚠️ Server kline fetch failed:',e.message);
+    return null;
+  }
+}
+
+// -- Auto-prediction cron: runs at fixed intervals each hour --
+async function runAutoPrediction(){
+  const currentHour=new Date().getUTCHours();
+  
+  // Already locked this hour? Skip.
+  if(serverHourlyPredLock.hour===currentHour&&serverHourlyPredLock.prediction){
+    return;
+  }
+
+  const prices=await fetchServerKlines();
+  if(!prices||prices.length<26){
+    console.log('⏳ Auto-prediction: only '+((prices&&prices.length)||0)+' candles, need 26. Will retry.');
+    return;
+  }
+
+  // Get PTB
+  const ptbPrice=serverHourlyPtb.hour===currentHour?serverHourlyPtb.price:null;
+  
+  // If we don't have PTB yet, set it from the first candle's open
+  if(!ptbPrice){
+    try{
+      const resp=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
+      if(resp.ok){
+        const d=await resp.json();
+        if(d&&d[0]){
+          const openPrice=parseFloat(d[0][1]);
+          if(openPrice>30000&&openPrice<200000){
+            serverHourlyPtb={price:openPrice,hour:currentHour,timestamp:Date.now()};
+            console.log('📌 Auto-set hourly PTB: $'+openPrice.toFixed(2));
+          }
+        }
+      }
+    }catch(e){}
+  }
+
+  const result=serverMakePrediction(prices, serverHourlyPtb.price);
+  if(!result)return;
+
+  // Check lock timing (same logic as frontend)
+  const minutesIn=new Date().getMinutes();
+  const priceDiff=serverHourlyPtb.price?Math.abs(prices[prices.length-1]-serverHourlyPtb.price):999;
+  const MIN_WAIT=2,MAX_WAIT=15,CLOSE=30,CLEAR=150;
+  let lockAfter;
+  if(priceDiff>=CLEAR)lockAfter=MIN_WAIT;
+  else if(priceDiff<=CLOSE)lockAfter=MAX_WAIT;
+  else{const t=(priceDiff-CLOSE)/(CLEAR-CLOSE);lockAfter=MAX_WAIT-t*(MAX_WAIT-MIN_WAIT)}
+  if(result.margin>0.5)lockAfter=Math.max(MIN_WAIT,lockAfter-result.margin*3);
+
+  if(minutesIn>=lockAfter){
+    serverHourlyPredLock={
+      hour:currentHour,
+      prediction:{willBeat:result.willBeat,confidence:result.confidence,bullScore:result.bullScore,bearScore:result.bearScore},
+      ts:Date.now()
+    };
+    console.log('🔒 Auto-prediction locked: '+(result.willBeat?'YES ↑':'NO ↓')+' ('+result.confidence+'%) at minute '+minutesIn+' | gap $'+priceDiff.toFixed(0));
+  } else {
+    console.log('⏳ Auto-prediction: leaning '+(result.willBeat?'YES':'NO')+' but waiting (minute '+minutesIn+'/'+Math.ceil(lockAfter)+')');
+  }
+}
+
+// Run auto-prediction every 60 seconds
+setInterval(runAutoPrediction,60000);
+// Also run once on server start (after a short delay for PTB to load)
+setTimeout(runAutoPrediction,5000);
+
+// Reset prediction lock at the top of each hour
+setInterval(()=>{
+  const now=new Date();
+  if(now.getMinutes()===0&&now.getSeconds()<5){
+    serverHourlyPredLock={hour:-1,prediction:null,ts:0};
+    console.log('🔄 Hourly prediction reset');
+  }
+},1000);
+
 // ─── Serve Frontend ───
 
 // Free tier page (1-hour predictor, no auth needed) - MUST be before static
