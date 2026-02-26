@@ -369,7 +369,7 @@ function connectPolyWs(){
         const d=JSON.parse(e.data);
         if(d.topic==='crypto_prices_chainlink'&&d.payload&&d.payload.symbol==='btc/usd'){
           latestChainlinkPrice=d.payload.value;latestBtcPrice=d.payload.value;btcPrice=d.payload.value;
-          if(!displayPrice){displayPrice=d.payload.value}
+          displayPrice=d.payload.value;
           recordPrice(d.payload.value);updateUI();
         }
         if(d.topic==='crypto_prices'&&d.payload){
@@ -392,8 +392,7 @@ function connectBtcWs(){
     btcWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
     btcWs.onmessage=function(e){
       const d=JSON.parse(e.data);const p=parseFloat(d.p);
-      if(!latestChainlinkPrice){btcPrice=p;latestBtcPrice=p;recordPrice(p)}
-      if(!displayPrice){displayPrice=p;updateUI()}
+      if(!latestChainlinkPrice){btcPrice=p;latestBtcPrice=p;displayPrice=p;recordPrice(p);updateUI()}
     };
     btcWs.onclose=function(){setTimeout(connectBtcWs,3000)};
     btcWs.onerror=function(){btcWs.close()};
