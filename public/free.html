@@ -377,49 +377,50 @@ function connectBtcWs(){
 }
 connectPolyWs();connectBtcWs();
 
-// ═══ HISTORICAL SEED: Fetch Binance 1m klines so every user gets the same data ═══
-let historySeeded=false;
-async function seedPriceHistory(){
+// ═══ DETERMINISTIC PRICE HISTORY VIA KLINE WEBSOCKET ═══
+// Instead of recording random live ticks (which differ per user based on load time),
+// we use Binance's 1-minute kline WebSocket. Every user receives the same candle
+// close price at the same wall-clock minute — fully deterministic.
+// The @kline_1m stream uses the same wss://stream.binance.com domain as the
+// existing btcusdt@trade WS which already works on this site.
+
+let klineWs=null;
+let klineBuffer=null; // holds the latest in-progress candle close price
+
+function connectKlineWs(){
   try{
-    // Fetch 1-minute klines from the start of the current hour
-    const now=new Date();
-    const hourStart=new Date(now);hourStart.setMinutes(0,0,0);
-    const startMs=hourStart.getTime();
-    const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime='+startMs+'&limit=60');
-    const klines=await r.json();
-    if(klines&&klines.length>0){
-      // Each kline: [openTime, open, high, low, close, volume, ...]
-      // Use close prices as our canonical history — deterministic for all users
-      const seeded=[];
-      for(const k of klines){
-        const closePrice=parseFloat(k[4]);
-        if(closePrice>0)seeded.push(closePrice);
-      }
-      if(seeded.length>0){
-        // Replace whatever we collected so far with the canonical history
-        priceHistory=seeded;
-        historySeeded=true;
-        console.log('📊 Seeded priceHistory with '+seeded.length+' canonical 1m klines from Binance (hour start: '+hourStart.toISOString()+')');
-      }
-    }
-  }catch(e){console.warn('⚠️ Failed to seed price history from Binance:',e)}
+    klineWs=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
+    klineWs.onmessage=function(e){
+      try{
+        const d=JSON.parse(e.data);
+        if(!d.k)return;
+        // Always track latest close price from the in-progress candle
+        klineBuffer=parseFloat(d.k.c);
+        if(d.k.x){ // x=true → candle is finalized/closed
+          const closePrice=parseFloat(d.k.c);
+          if(closePrice>0){
+            priceHistory.push(closePrice);
+            if(priceHistory.length>500)priceHistory.shift();
+            console.log('🕯️ Kline 1m closed: $'+closePrice.toFixed(2)+' | history: '+priceHistory.length+' candles');
+          }
+        }
+      }catch(ex){}
+    };
+    klineWs.onclose=function(){setTimeout(connectKlineWs,3000)};
+    klineWs.onerror=function(){klineWs.close()};
+  }catch(e){setTimeout(connectKlineWs,5000)}
 }
-// Seed on load
-seedPriceHistory();
+connectKlineWs();
 
-// Re-seed every 60s to keep history in sync across users
-setInterval(seedPriceHistory,60000);
-
-// Record price into history (sample ~every 5s, keep 500 points = ~40min of 5s ticks)
-// Only used as a FALLBACK if Binance kline fetch fails — live WS data appends after seed
+// OLD recordPrice — now a no-op for priceHistory.
+// Live WS ticks still update btcPrice/displayPrice for the UI,
+// but prediction history is exclusively from kline candle closes.
 let lastRecordTime=0;
 function recordPrice(p){
   const now=Date.now();
-  if(now-lastRecordTime<4000)return; // throttle to ~5s
+  if(now-lastRecordTime<4000)return;
   lastRecordTime=now;
-  // If we have seeded data, only append new live ticks (don't duplicate kline data)
-  priceHistory.push(p);
-  if(priceHistory.length>500)priceHistory.shift();
+  // Prediction data comes from kline WS — don't mix in random ticks
 }
 
 // ═══ PTB MANAGEMENT ═══
@@ -462,7 +463,7 @@ function startPtbTimer(){
   setTimeout(async()=>{
     async function captureHourly(){
       locked=false;prediction=null;clearLock();ptbHour=new Date().getUTCHours();ptbSetAt=new Date();
-      priceHistory=[]; historySeeded=false; // reset price history for new hour's prediction
+      priceHistory=[];klineBuffer=null; // reset price history for new hour's prediction
       document.getElementById('predDisplay').className='pred pred-nu';
       document.getElementById('predValue').textContent='--';
       document.getElementById('predConf').textContent='New hour — gathering signals...';
@@ -557,14 +558,14 @@ function updateUI(){
   }
 
   // Need enough price history to compute indicators
-  // Require at least 26 samples (for MACD) — seeded from Binance klines on load
+  // Require at least 26 candles (for MACD-26) — 1 candle per minute from kline WS.
+  // If user loads mid-hour, they must wait for candles to accumulate.
+  // This is intentional: it guarantees every user runs indicators on
+  // the SAME data, producing the SAME prediction.
   if(priceHistory.length<26){
     const needed=26-priceHistory.length;
-    if(!historySeeded){
-      document.getElementById('status').textContent='Fetching historical candles from Binance...';
-    } else {
-      document.getElementById('status').textContent='Collecting data — '+priceHistory.length+'/26 samples';
-    }    // Show wait bar
+    const klineInfo=klineBuffer?' | Live: $'+klineBuffer.toFixed(0):'';
+    document.getElementById('status').textContent='Collecting 1m candles — '+priceHistory.length+'/26 (~'+needed+'m remaining)'+klineInfo;    // Show wait bar
     document.getElementById('waitBarWrap').style.display='block';
     document.getElementById('lockInfo').style.display='none';
     const pct=Math.round(priceHistory.length/26*100);
@@ -663,15 +664,13 @@ function renderSignals(sigs){
 setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<5){
-    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];historySeeded=false;
+    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];klineBuffer=null;
     document.getElementById('predDisplay').className='pred pred-nu';
     document.getElementById('predValue').textContent='--';
     document.getElementById('predConf').textContent='New hour starting...';
     document.getElementById('signals').innerHTML='<span style="color:var(--tx3)">Collecting data...</span>';
     document.getElementById('waitBarWrap').style.display='none';
     document.getElementById('lockInfo').style.display='none';
-    // Re-seed after a short delay so Binance has the new hour's first candle
-    setTimeout(seedPriceHistory,10000);
   }
 },1000);
 
