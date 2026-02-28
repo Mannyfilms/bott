@@ -129,6 +129,33 @@ let priceHistory=[]; // {price, time, open, high, low, close, volume}
 let sentimentData={fearGreed:50,funding:0,sentiment:'NEUTRAL'};
 let ptbHour=-1;
 
+// ═══ POSITION TRACKING (ported from 5-min version) ═══
+let positionHistory=[];
+function trackPosition(price,ptbVal){
+  if(!ptbVal)return;
+  positionHistory.push({above:price>=ptbVal,diff:price-ptbVal,timestamp:Date.now()});
+  if(positionHistory.length>720)positionHistory.shift(); // ~60 min at 5s intervals
+}
+function getPositionBias(){
+  if(positionHistory.length<2)return{abovePct:0.5,avgDiff:0,trend:0};
+  // Recency-weighted: last third counts 2x
+  let weightedAbove=0,weightedTotal=0;
+  const len=positionHistory.length;
+  positionHistory.forEach((p,i)=>{
+    const w=i>=len*0.66?2:1;
+    if(p.above)weightedAbove+=w;
+    weightedTotal+=w;
+  });
+  const abovePct=weightedTotal>0?weightedAbove/weightedTotal:0.5;
+  const avgDiff=positionHistory.reduce((s,p)=>s+p.diff,0)/positionHistory.length;
+  // Momentum from last 12 samples vs previous 12
+  const recent=positionHistory.slice(-12).map(p=>p.diff);
+  const older=positionHistory.slice(-24,-12).map(p=>p.diff);
+  const recentAvg=recent.length?recent.reduce((a,b)=>a+b,0)/recent.length:0;
+  const olderAvg=older.length?older.reduce((a,b)=>a+b,0)/older.length:recentAvg;
+  return{abovePct,avgDiff,trend:recentAvg-olderAvg};
+}
+
 // ═══ PERSIST LOCKED PREDICTION ACROSS RELOADS ═══
 // Enhanced: server lock is the SINGLE SOURCE OF TRUTH.
 // The first user to lock a prediction sets it for everyone.
@@ -304,18 +331,20 @@ function makeTechnicalPrediction(prices){
   else if(fr<-0.005){bullScore+=1;signals.push({name:'Funding: Negative — shorts dominate ('+fr.toFixed(4)+'%)',up:true,strength:1})}
   else signals.push({name:'Funding: Normal ('+fr.toFixed(4)+'%)',up:null,strength:0});
 
-  // 9. Price vs PTB as a mild directional signal (weighted LOW — not the main driver)
-  if(ptb){
-    const cur=prices[prices.length-1];
-    const diff=cur-ptb;
-    const gap=Math.abs(diff);
-    // Only use as a signal if gap is significant (>$100)
-    // — avoids the tautology while still noting extreme displacements
-    if(gap>200){
-      if(diff>0){bullScore+=0.5;signals.push({name:'vs PTB: $'+gap.toFixed(0)+' above (mild bull)',up:true,strength:0.5})}
-      else{bearScore+=0.5;signals.push({name:'vs PTB: $'+gap.toFixed(0)+' below (mild bear)',up:false,strength:0.5})}
-    } else {
-      signals.push({name:'vs PTB: $'+(diff>0?'+':'')+diff.toFixed(0)+' (too close to use as signal)',up:null,strength:0});
+  // 9. Position tracking — how long has price been above/below PTB?
+  // This is the strongest signal for "will it beat PTB" predictions
+  const pos=getPositionBias();
+  if(positionHistory.length>=20){
+    const abovePct=pos.abovePct;
+    const dominance=Math.abs(abovePct-0.5)*2;
+    if(abovePct>0.6){bullScore+=3*dominance;signals.push({name:'Position: Above PTB '+Math.round(abovePct*100)+'% (weighted)',up:true,strength:3*dominance})}
+    else if(abovePct<0.4){bearScore+=3*dominance;signals.push({name:'Position: Below PTB '+Math.round((1-abovePct)*100)+'% (weighted)',up:false,strength:3*dominance})}
+    else signals.push({name:'Position: Split '+Math.round(abovePct*100)+'% above',up:null,strength:0});
+
+    // Momentum — is price accelerating toward or away from PTB?
+    if(Math.abs(pos.trend)>5){
+      if(pos.trend>0){bullScore+=1.5;signals.push({name:'PTB Momentum: Pushing UP +$'+pos.trend.toFixed(0),up:true,strength:1.5})}
+      else{bearScore+=1.5;signals.push({name:'PTB Momentum: Pushing DOWN $'+pos.trend.toFixed(0),up:false,strength:1.5})}
     }
   }
 
@@ -330,13 +359,12 @@ function makeTechnicalPrediction(prices){
 }
 
 // ═══ DYNAMIC LOCK TIMING (scaled to 1 hour) ═══
-// Same logic as pro version but scaled: 5min→60min (×12)
-// Price far from PTB ($150+) → lock after 2 min
-// Price close to PTB (<$30)  → wait up to 15 min (max)
-// Strong signal consensus can shave time off the wait
+// Wait at least 10 minutes to gather position data
+// Lock between 10-30 minutes based on gap and signal strength
+// Force-lock at 30 minutes no matter what
 function getLockAfterMins(priceDiff, signalMargin){
-  const MIN_WAIT_MINS = 2;   // never lock before 2 min into the hour
-  const MAX_WAIT_MINS = 15;  // never wait more than 15 min
+  const MIN_WAIT_MINS = 10;  // never lock before 10 min
+  const MAX_WAIT_MINS = 30;  // force lock by 30 min (leaves 30 min for user)
   const CLOSE_THRESHOLD = 30;
   const CLEAR_THRESHOLD = 150;
 
@@ -349,8 +377,8 @@ function getLockAfterMins(priceDiff, signalMargin){
     const t=(priceDiff-CLOSE_THRESHOLD)/(CLEAR_THRESHOLD-CLOSE_THRESHOLD);
     lockAfter=MAX_WAIT_MINS - t*(MAX_WAIT_MINS-MIN_WAIT_MINS);
   }
-  // Strong signals → can lock up to 3 min sooner
-  if(signalMargin>0.5){
+  // Strong signals + enough position data → can lock sooner (up to 3 min)
+  if(signalMargin>0.5&&positionHistory.length>=60){
     lockAfter=Math.max(MIN_WAIT_MINS, lockAfter - signalMargin*3);
   }
   return lockAfter;
@@ -450,7 +478,7 @@ function startPtbTimer(){
   setTimeout(async()=>{
     async function captureHourly(){
       locked=false;prediction=null;clearLock();ptbHour=new Date().getUTCHours();ptbSetAt=new Date();
-      priceHistory=[]; // reset price history for new hour's prediction
+      priceHistory=[];positionHistory=[];
       document.getElementById('predDisplay').className='pred pred-nu';
       document.getElementById('predValue').textContent='--';
       document.getElementById('predConf').textContent='New hour — gathering signals...';
@@ -578,6 +606,9 @@ function updateUI(){
     return;
   }
 
+  // Track position vs PTB every tick (like 5-min version)
+  if(ptb&&(displayPrice||btcPrice))trackPosition(displayPrice||btcPrice,ptb);
+
   // Run technical prediction
   const result=makeTechnicalPrediction(priceHistory);
   if(!result)return;
@@ -586,16 +617,19 @@ function updateUI(){
   const minutesIn=new Date().getMinutes();
   const priceDiff=Math.abs((displayPrice||btcPrice)-ptb);
   const lockAfterMins=getLockAfterMins(priceDiff, result.margin);
-  const shouldLock=minutesIn>=lockAfterMins;
-  const minsToLock=Math.ceil(lockAfterMins-minutesIn);
+  const hasEnoughData=positionHistory.length>=60; // ~5 min of data
+  const shouldLock=minutesIn>=lockAfterMins&&hasEnoughData;
+  const forceLock=minutesIn>=30; // force by 30 min no matter what
+  const minsToLock=Math.max(0,Math.ceil(lockAfterMins-minutesIn));
 
   // Classify difficulty
   const callDiff=priceDiff>=150?'CLEAR':priceDiff<=30?'TOO CLOSE':'MARGINAL';
   const diffColor=callDiff==='CLEAR'?'var(--up)':callDiff==='TOO CLOSE'?'var(--dn)':'#eab308';
 
-  if(!shouldLock){
+  if(!shouldLock&&!forceLock){
     // Still watching — show lean + signals + wait bar
-    document.getElementById('status').textContent='⏳ '+callDiff+' — locking in ~'+minsToLock+'m';
+    const dataStatus=positionHistory.length<60?' · Data: '+positionHistory.length+'/60':'';
+    document.getElementById('status').textContent='⏳ '+callDiff+' — locking in ~'+minsToLock+'m'+dataStatus;
     document.getElementById('predDisplay').className='pred pred-nu';
     const leanArrow=result.prediction?'↑':'↓';
     document.getElementById('predValue').innerHTML=
@@ -617,18 +651,20 @@ function updateUI(){
     document.getElementById('lockInfo').innerHTML=
       '<span style="color:'+diffColor+'">'+callDiff+'</span> — '+
       (callDiff==='CLEAR'?'Large gap, locking soon (~'+minsToLock+'m)':
-       callDiff==='TOO CLOSE'?'Price near PTB, watching up to 15 min for clarity':
+       callDiff==='TOO CLOSE'?'Price near PTB, watching up to 30 min for clarity':
        'Marginal gap, locking in ~'+minsToLock+'m')+
-      ' | $'+priceDiff.toFixed(0)+' from PTB';
+      ' | $'+priceDiff.toFixed(0)+' from PTB'+
+      (positionHistory.length<60?' | Gathering data ('+positionHistory.length+'/60)':'');
   } else {
     // Lock it in
     locked=true;
+    const lockType=forceLock&&!shouldLock?'FORCE':'NORMAL';
     prediction={willBeat:result.prediction,confidence:result.confidence,bullScore:result.bullScore,bearScore:result.bearScore};
     saveLock();
     document.getElementById('waitBarWrap').style.display='none';
     document.getElementById('lockInfo').style.display='none';
     document.getElementById('status').textContent='🔒 Prediction locked at '+minutesIn+'m ('+callDiff+', gap $'+priceDiff.toFixed(0)+')';
-    console.log('🔒 LOCKED ['+callDiff+'] at '+minutesIn+'m | gap $'+priceDiff.toFixed(0)+' | margin '+result.margin.toFixed(2)+' | → '+(result.prediction?'YES ↑':'NO ↓')+' ('+result.confidence+'%)');
+    console.log('🔒 '+lockType+'-LOCKED ['+callDiff+'] at '+minutesIn+'m | gap $'+priceDiff.toFixed(0)+' | pos: '+positionHistory.length+' samples, above '+Math.round(getPositionBias().abovePct*100)+'% | → '+(result.prediction?'YES ↑':'NO ↓')+' ('+result.confidence+'%)');
     updatePredDisplay();
   }
 
@@ -668,7 +704,7 @@ function renderSignals(sigs){
 setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<5){
-    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];
+    locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];positionHistory=[];
     document.getElementById('predDisplay').className='pred pred-nu';
     document.getElementById('predValue').textContent='--';
     document.getElementById('predConf').textContent='New hour starting...';
