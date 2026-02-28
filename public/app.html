@@ -494,51 +494,38 @@ async function loadPtb(){
 }
 loadPtb();
 
-// ═══ PTB: Fetch real PTB from Polymarket API, fallback to Chainlink ═══
-async function fetchRealPtb(){
-  try{
-    const r=await fetch('/api/polymarket-ptb');
-    const data=await r.json();
-    if(!data||!data.allMarketFields)return null;
-    const f=data.allMarketFields;
-    // Try known field names where PTB might live
-    for(const key of ['startPrice','strikePrice','openPrice','referencePrice','priceToBeat']){
-      if(f[key]){const v=parseFloat(f[key]);if(v>50000&&v<200000)return v}
-    }
-    // Try parsing from description/question/title
-    const allText=[f.description,f.question,data.eventTitle,data.eventDescription].filter(Boolean).join(' ');
-    const match=allText.match(/\$([\d,]+\.?\d*)/);
-    if(match){const v=parseFloat(match[1].replace(/,/g,''));if(v>50000&&v<200000)return v}
-    // Log all fields so we can find it
-    console.log('🔍 Polymarket fields (looking for PTB):',Object.keys(f).filter(k=>typeof f[k]==='number'||/^\d/.test(f[k])).map(k=>k+'='+f[k]).join(', '));
-  }catch(e){console.log('⚠️ fetchRealPtb error:',e.message)}
-  return null;
-}
-
-// Self-correcting timer — fires at exact 5-min boundary
+// ═══ PTB: Capture Chainlink price at exact 5-minute boundary ═══
+// Polymarket settles on Chainlink BTC/USD — this is the ONLY reliable source for PTB
 function schedulePtbCapture(){
   const now=Date.now(),slotMs=300000;
   const nextBoundary=Math.ceil(now/slotMs)*slotMs;
-  setTimeout(async()=>{
-    // Try Polymarket API first (exact match to their site)
-    const polyPtb=await fetchRealPtb();
-    if(polyPtb&&markets[5]){
-      markets[5].priceToBeat=polyPtb;
-      savePtb(polyPtb);
-      console.log('🎯 PTB from Polymarket: $'+polyPtb.toFixed(2));
+  const delay=nextBoundary-now;
+  console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
+  setTimeout(()=>{
+    // Only use Chainlink — that's what Polymarket settles on
+    if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000&&markets[5]){
+      markets[5].priceToBeat=latestChainlinkPrice;
+      savePtb(latestChainlinkPrice);
+      console.log('🎯 PTB SET (Chainlink): $'+latestChainlinkPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
     }else{
-      // Fallback to Chainlink WebSocket
-      const fresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-      if(fresh&&markets[5]){
-        markets[5].priceToBeat=latestChainlinkPrice;
-        savePtb(latestChainlinkPrice);
-        console.log('🎯 PTB from Chainlink (fallback): $'+latestChainlinkPrice.toFixed(2));
-      }else{
-        console.log('⏳ No PTB source available at boundary');
-      }
+      console.log('⚠️ Chainlink stale at boundary — waiting for fresh data');
+      // Retry every 500ms for up to 5s to catch Chainlink
+      let retries=0;
+      const retryPtb=setInterval(()=>{
+        retries++;
+        if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<10000&&markets[5]){
+          markets[5].priceToBeat=latestChainlinkPrice;
+          savePtb(latestChainlinkPrice);
+          console.log('🎯 PTB SET (Chainlink retry #'+retries+'): $'+latestChainlinkPrice.toFixed(2));
+          clearInterval(retryPtb);
+        }else if(retries>=10){
+          clearInterval(retryPtb);
+          console.log('❌ No Chainlink data after 5s — PTB not set this slot');
+        }
+      },500);
     }
     schedulePtbCapture();
-  },nextBoundary-now);
+  },delay);
 }
 schedulePtbCapture();
 
@@ -758,12 +745,10 @@ let historicalCandles=[];
 async function loadHistoricalData(){
   try{
     document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--btc)">LOADING</strong> &middot; Fetching candles...';
-    // Run all startup fetches in parallel with individual timeouts
-    // Nothing here can block for more than 8s, and the whole group races against 10s
     const [raw1m, raw5m] = await Promise.all([
-      fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=200',{},8000)
+      fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=200',{},5000)
         .then(r=>r.json()).catch(()=>null),
-      fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100',{},8000)
+      fetchWithTimeout('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=100',{},5000)
         .then(r=>r.json()).catch(()=>null)
     ]);
     if(raw1m){
@@ -783,15 +768,17 @@ async function loadHistoricalData(){
         close:parseFloat(c[4]),volume:parseFloat(c[5])
       }));
     }
-    // Fire secondary fetches in parallel, non-blocking — don't await, let them populate in background
-    Promise.all([
-      fetchTakerVolume().catch(()=>{}),
-      fetchOrderBook().catch(()=>{}),
-      fetchOpenInterest().catch(()=>{}),
-      fetchRecentTrades().catch(()=>{}),
-      fetchLongShortRatio().catch(()=>{})
-    ]);
-    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; '+(raw1m?'200 candles loaded':'Live mode')+'&middot; 24 strategies online';
+    // Secondary fetches run in background — don't block startup
+    setTimeout(()=>{
+      Promise.all([
+        fetchTakerVolume().catch(()=>{}),
+        fetchOrderBook().catch(()=>{}),
+        fetchOpenInterest().catch(()=>{}),
+        fetchRecentTrades().catch(()=>{}),
+        fetchLongShortRatio().catch(()=>{})
+      ]);
+    },2000);
+    document.getElementById('mlStatus').innerHTML='Ensemble: <strong style="color:var(--up)">ACTIVE</strong> &middot; '+(raw1m?'200 candles loaded':'Live mode')+' &middot; 24 strategies online';
     return true;
   }catch(e){
     console.error('Failed to load historical:',e);
@@ -1229,40 +1216,56 @@ function applyLearned(name,baseScore){
 function makePred(prices,volumes,ptb){try{if(prices.length<5||!ptb)return{willBeat:null,confidence:0,signals:[],modelPredictions:{},skip:false};
 const jp=prices.map(p=>p.price),cur=jp[jp.length-1];
 
-// ═══ SIMPLE: How long has price been above/below PTB? ═══
+// ═══ POSITION-BASED PREDICTION ═══
 let sigs=[];
 const diff=cur-ptb;
 const gap=Math.abs(diff);
 const aboveNow=diff>0;
 
-// Count ticks above vs below PTB from position history
 const posData=getPositionBias();
-const abovePct=posData.abovePct; // 0-1, how much time spent above
-const avgDiff=posData.avgDiff; // average distance from PTB
-const trend=posData.trend; // moving toward or away
+const abovePct=posData.abovePct;
+const avgDiff=posData.avgDiff;
+const trend=posData.trend;
 
-// The prediction: if price has been above PTB for most of the slot → YES
-const prediction=abovePct>0.5;
-const dominance=Math.abs(abovePct-0.5)*2; // 0=50/50, 1=100% one side
+// Weight recent data more: last third of position history counts 2x
+let weightedAbove=0,weightedTotal=0;
+const len=positionHistory.length;
+positionHistory.forEach((p,i)=>{
+  const w=i>=len*0.66?2:1; // Last third gets double weight
+  if(p.above)weightedAbove+=w;
+  weightedTotal+=w;
+});
+const weightedAbovePct=weightedTotal>0?weightedAbove/weightedTotal:0.5;
+
+// Use weighted percentage for the actual prediction
+const prediction=weightedAbovePct>0.5;
+const dominance=Math.abs(weightedAbovePct-0.5)*2;
+
+// Current momentum: is price accelerating away from or toward PTB?
+const recentDiffs=positionHistory.slice(-6).map(p=>p.diff);
+const momentum=recentDiffs.length>=2?recentDiffs[recentDiffs.length-1]-recentDiffs[0]:0;
+const momentumAgreesWithPrediction=(prediction&&momentum>0)||(!prediction&&momentum<0);
 
 sigs.push({name:'Price vs PTB',signal:(aboveNow?'+$':'-$')+gap.toFixed(2),strength:Math.min(gap/10,5)});
-sigs.push({name:'Time Above PTB',signal:Math.round(abovePct*100)+'% of slot',strength:dominance*5});
+sigs.push({name:'Time Above PTB',signal:Math.round(weightedAbovePct*100)+'% (weighted)',strength:dominance*5});
 sigs.push({name:'Avg Distance',signal:(avgDiff>0?'+':'')+avgDiff.toFixed(2),strength:Math.min(Math.abs(avgDiff)/10,3)});
-sigs.push({name:'Trend',signal:trend>0?'Moving UP':'Moving DOWN',strength:Math.min(Math.abs(trend),3)});
+sigs.push({name:'Momentum',signal:momentum>0?'Pushing UP $'+Math.abs(momentum).toFixed(0):momentum<0?'Pushing DOWN $'+Math.abs(momentum).toFixed(0):'Flat',strength:Math.min(Math.abs(momentum)/20,3)});
 sigs.push({name:'Current',signal:aboveNow?'ABOVE PTB':'BELOW PTB',strength:gap>20?3:gap>5?2:1});
+sigs.push({name:'Samples',signal:positionHistory.length+' ticks collected',strength:positionHistory.length>=30?3:1});
 
-// Confidence scales with how dominant one side is + how big the gap is
-const gapConf=Math.min(gap/50*15,15); // bigger gap = more confident
-const timeConf=dominance*15; // more time on one side = more confident
-const confidence=Math.max(85,Math.min(98,85+gapConf+timeConf)).toFixed(1);
+// Confidence: higher when data agrees, lower when mixed signals
+const gapConf=Math.min(gap/50*10,10);
+const timeConf=dominance*12;
+const momentumConf=momentumAgreesWithPrediction?5:0;
+const dataConf=positionHistory.length>=30?5:0;
+const confidence=Math.max(75,Math.min(98,75+gapConf+timeConf+momentumConf+dataConf)).toFixed(1);
 
 let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
 try{feat=extractFeat(prices,volumes)}catch(e){console.log('⚠️ Feature extraction failed (ok):',e.message)}
-// ML model predictions run in background, don't block
 try{const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];getMP(feat,sf).then(r=>{mp=r}).catch(()=>{})}catch(e){}
 const cp2=detectPat(jp);
 
-console.log('📊 Above: '+Math.round(abovePct*100)+'% | Gap: $'+gap.toFixed(0)+' | → '+(prediction?'YES':'NO'));
+console.log('📊 Above: '+Math.round(weightedAbovePct*100)+'% (weighted) | Gap: $'+gap.toFixed(0)+' | Mom: '+(momentum>0?'+':'')+momentum.toFixed(0)+' | Samples: '+positionHistory.length+' | → '+(prediction?'YES':'NO'));
 
 return{willBeat:prediction,confidence:confidence,signals:sigs,modelPredictions:mp,pattern:cp2,skip:false,features:feat}}
 catch(e){console.log('❌ makePred error:',e);return{willBeat:null,confidence:0,signals:[],modelPredictions:{lstm:0.5,technical:0.5,hybrid:0.5},skip:false,features:[]}}}
@@ -1282,24 +1285,32 @@ const m=getActiveMarket(),ptb=m.priceToBeat,slotEnd=getSlotEnd(selectedTimeframe
 if(priceHistory.length>=5&&ptb){let pred;try{pred=makePred(priceHistory,vols,ptb)}catch(e){console.log('❌ makePred call failed:',e);return}
 if(!pred||pred.willBeat===null)return;
 
-// ═══ PREDICTION LOCK SYSTEM — GAP-BASED TIMING ═══
-// Big gap ($50+) = lock in ~10s, Small gap ($5) = wait up to 2 minutes
-// Too close (< $5 after 2 min) = SKIP
+// ═══ PREDICTION LOCK SYSTEM — PATIENCE-BASED ═══
+// Wait until at least 3 minutes into the slot before even considering a lock.
+// The first 1-2 minutes of a slot are noise — price often reverses.
+// Lock in the 3:00-4:30 window based on accumulated position data.
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
 
-// Lock timing: bigger gap = faster lock
-// $100+ gap → 10s, $50 → 30s, $20 → 60s, $5 → 120s
-const lockAfter=Math.max(10,Math.min(120, 120-Math.min(priceDiff,100)*1.1));
+// MINIMUM 180 seconds (3 min) before we even consider locking
+// Then: bigger gap = slightly faster lock, smaller gap = wait longer
+// $100+ gap → lock at 180s, $50 gap → 200s, $20 gap → 230s, $5 gap → 270s (4.5 min)
+const MIN_WAIT=180; // Never lock before 3 minutes
+const MAX_WAIT=270; // Lock by 4.5 minutes at the latest
+const lockAfter=Math.max(MIN_WAIT, Math.min(MAX_WAIT, MAX_WAIT-Math.min(priceDiff,100)*0.9));
 const shouldLock=timeInSlot>=lockAfter;
 
-// Too close to call: after full wait (120s), gap is still tiny
+// Too close to call: after max wait, gap is still tiny AND position is ~50/50
 const TOO_CLOSE_THRESHOLD=5; // $5
-const isTooClose=priceDiff<TOO_CLOSE_THRESHOLD&&timeInSlot>=120;
+const positionBias=getPositionBias();
+const isTooClose=priceDiff<TOO_CLOSE_THRESHOLD&&timeInSlot>=MAX_WAIT&&Math.abs(positionBias.abovePct-0.5)<0.1;
+
+// Need minimum 30 position samples (~2.5 min of data) for a reliable prediction
+const hasEnoughData=positionHistory.length>=30;
 
 let finalPrediction=pred.willBeat;
-let strategy='ABOVE '+Math.round(getPositionBias().abovePct*100)+'%';
+let strategy='ABOVE '+Math.round(positionBias.abovePct*100)+'%';
 let clampedConf=pred.confidence;
 
 let displayWillBeat=finalPrediction;
@@ -1317,16 +1328,16 @@ if(!predictionLock.locked){
     const pb=document.getElementById('predictionDisplay');
     pb.className='pred';
     pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
-    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx3)">⏭️ SKIPPED</div><div style="font-size:.45em;margin-top:4px;color:var(--tx3)">Too close to call — $'+priceDiff.toFixed(2)+' from PTB</div>';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx3)">⏭️ SKIPPED</div><div style="font-size:.45em;margin-top:4px;color:var(--tx3)">Too close to call — $'+priceDiff.toFixed(2)+' gap, '+Math.round(positionBias.abovePct*100)+'% above</div>';
     document.getElementById('predictionConfidence').textContent='Gap too small to predict reliably';
     document.getElementById('predictionDetails').textContent='Waiting for next slot...';
     document.getElementById('confidenceMeter').style.width='0%';
     document.getElementById('confPercent').textContent='SKIP';
-    console.log('⏭️ SKIPPED: gap $'+priceDiff.toFixed(2)+' too close after 2 min wait');
+    console.log('⏭️ SKIPPED: gap $'+priceDiff.toFixed(2)+', above '+Math.round(positionBias.abovePct*100)+'%');
     displaySignals(pred.signals);updateCountdown();
     return;
   }
-  if(shouldLock){
+  if(shouldLock&&hasEnoughData){
     predictionLock.locked=true;
     predictionLock.direction=finalPrediction;
     predictionLock.lockPrice=price;
@@ -1335,15 +1346,15 @@ if(!predictionLock.locked){
     savePredictionLock();
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
-    console.log('🔒 LOCKED at '+timeInSlot.toFixed(0)+'s (gap $'+priceDiff.toFixed(0)+' → lockAfter '+lockAfter.toFixed(0)+'s): '+(finalPrediction?'YES ↑':'NO ↓'));
+    console.log('🔒 LOCKED at '+timeInSlot.toFixed(0)+'s ('+positionHistory.length+' samples, above '+Math.round(positionBias.abovePct*100)+'%, gap $'+priceDiff.toFixed(0)+'): '+(finalPrediction?'YES ↑':'NO ↓'));
   }else{
     lockStatus='analyzing';
-    const secsToLock=Math.ceil(lockAfter-timeInSlot);
+    const secsToLock=Math.max(0,Math.ceil(lockAfter-timeInSlot));
     m.currentPrediction={willBeat:finalPrediction,confidence:clampedConf,priceToBeat:ptb,currentPrice:price,timestamp:Date.now(),targetTime:slotEnd,signals:pred.signals,features:pred.features,modelPredictions:pred.modelPredictions,pattern:pred.pattern,strategy:strategy};
     const pb=document.getElementById('predictionDisplay');pb.className='pred';pb.style.background='linear-gradient(135deg,rgba(100,100,120,.15),rgba(80,80,100,.1))';
-    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Watching... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ +$':'↓ -$')+priceDiff.toFixed(0)+' from PTB · Above '+Math.round(getPositionBias().abovePct*100)+'% of time</div>';
+    document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em;color:var(--tx2)">⏳ Analyzing... ('+secsToLock+'s)</div><div style="font-size:.52em;margin-top:4px;color:var(--tx3)">'+(priceAbovePtb?'↑ +$':'↓ -$')+priceDiff.toFixed(0)+' from PTB · Above '+Math.round(positionBias.abovePct*100)+'% · '+positionHistory.length+' samples</div>';
     document.getElementById('predictionConfidence').textContent='Leaning: '+(finalPrediction?'YES ↑':'NO ↓');
-    document.getElementById('predictionDetails').textContent='Gap $'+priceDiff.toFixed(0)+' → locks in ~'+secsToLock+'s';
+    document.getElementById('predictionDetails').textContent=positionHistory.length<30?'Gathering data ('+positionHistory.length+'/30)...':'Gap $'+priceDiff.toFixed(0)+' → locks in ~'+secsToLock+'s';
     document.getElementById('nextCheckTime').textContent=fmt(slotEnd);
     document.getElementById('confidenceMeter').style.width='0%';
     document.getElementById('confPercent').textContent='--';
@@ -1500,22 +1511,25 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
-    // Set PTB for new slot if the boundary timer didn't already handle it
-    if(m.priceToBeat===null||tf!==5){
+    // PTB for 5-min is handled by schedulePtbCapture — don't override here
+    // For non-5m timeframes, use Chainlink if available
+    if(tf!==5){
       const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-      const newPtb=clFresh?latestChainlinkPrice:price;
-      m.priceToBeat=newPtb;
-      if(tf===5)savePtb(newPtb);
-      console.log('🎯 PTB captured on slot change ['+tf+'m]: $'+newPtb.toFixed(2)+(clFresh?' (Chainlink)':' (fallback)'));
+      if(clFresh){
+        m.priceToBeat=latestChainlinkPrice;
+      }
+      console.log('🎯 PTB on slot change ['+tf+'m]: $'+(m.priceToBeat||0).toFixed(2));
     }
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // On first detection (startup), set PTB if not already loaded from cache
+    // On first detection (startup), set PTB only from Chainlink
     if(m.priceToBeat===null){
       const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-      m.priceToBeat=clFresh?latestChainlinkPrice:price;
-      if(tf===5)savePtb(m.priceToBeat);
+      if(clFresh){
+        m.priceToBeat=latestChainlinkPrice;
+        if(tf===5)savePtb(m.priceToBeat);
+      }
     }
   }
   }catch(slotErr){console.error('❌ Slot update error ['+tf+'m]:',slotErr)}
