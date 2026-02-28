@@ -1274,11 +1274,10 @@ const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
 
-// MINIMUM 180 seconds (3 min) before we even consider locking
-// Then: bigger gap = slightly faster lock, smaller gap = wait longer
-// $100+ gap → lock at 180s, $50 gap → 200s, $20 gap → 230s, $5 gap → 270s (4.5 min)
-const MIN_WAIT=120; // Start considering at 2 minutes
-const MAX_WAIT=210; // Must lock by 3.5 minutes (leaves 1.5 min for user)
+// Lock timing: bigger gap = faster lock
+// $100+ gap → 60s, $50 → ~75s, $5 → 120s
+const MIN_WAIT=60; // $100+ gap → lock at 1 min
+const MAX_WAIT=120; // Small gap → lock by 2 min
 const lockAfter=Math.max(MIN_WAIT, Math.min(MAX_WAIT, MAX_WAIT-Math.min(priceDiff,100)*0.9));
 const shouldLock=timeInSlot>=lockAfter;
 
@@ -1287,7 +1286,7 @@ const TOO_CLOSE_THRESHOLD=5;
 const isTooClose=priceDiff<TOO_CLOSE_THRESHOLD&&timeInSlot>=MAX_WAIT;
 
 let finalPrediction=pred.willBeat;
-let strategy='ABOVE '+Math.round(positionBias.abovePct*100)+'%';
+let strategy='ABOVE '+Math.round(getPositionBias().abovePct*100)+'%';
 let clampedConf=pred.confidence;
 
 let displayWillBeat=finalPrediction;
