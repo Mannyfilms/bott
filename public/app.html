@@ -1271,9 +1271,9 @@ const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
 
 // Lock timing: bigger gap = faster lock
-// $100+ gap → 60s, $50 → ~75s, $5 → 120s
-const MIN_WAIT=60; // $100+ gap → lock at 1 min
-const MAX_WAIT=120; // Small gap → lock by 2 min
+// $100+ gap → 90s, $50 → ~105s, $5 → 150s
+const MIN_WAIT=90; // Even big gaps: analyze for at least 1.5 min
+const MAX_WAIT=150; // Small gap → lock by 2.5 min (leaves 2.5 min for user)
 const lockAfter=Math.max(MIN_WAIT, Math.min(MAX_WAIT, MAX_WAIT-Math.min(priceDiff,100)*0.9));
 const shouldLock=timeInSlot>=lockAfter;
 
