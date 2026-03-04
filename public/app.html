@@ -494,59 +494,36 @@ async function loadPtb(){
 }
 loadPtb();
 
-// ═══ PTB: Get exact PTB from Polymarket API, fallback to Chainlink ═══
-// Polymarket's market description contains the exact settlement price.
-// Chainlink WS can lag a few seconds, causing $2-5 drift.
-async function fetchPolymarketPtb(){
-  try{
-    const r=await fetch('/api/polymarket-odds');
-    const data=await r.json();
-    if(data.ptb&&data.ptb>50000&&data.ptb<200000)return data.ptb;
-  }catch(e){}
-  return null;
-}
-
+// ═══ PTB: Use Chainlink candle open price (same source as Polymarket) ═══
+// The first Chainlink tick in each 5-min slot IS the PTB.
+// processChainlinkTick() already captures this as currentChainlinkCandle.open
 function schedulePtbCapture(){
   const now=Date.now(),slotMs=300000;
   const nextBoundary=Math.ceil(now/slotMs)*slotMs;
   const delay=nextBoundary-now;
   console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
-  setTimeout(async()=>{
-    // Wait 2s for Polymarket to publish the new market
-    setTimeout(async()=>{
-      // Try Polymarket API first — this is the exact settlement price
-      const polyPtb=await fetchPolymarketPtb();
-      if(polyPtb&&markets[5]){
-        markets[5].priceToBeat=polyPtb;
-        savePtb(polyPtb);
-        console.log('🎯 PTB SET (Polymarket API): $'+polyPtb.toFixed(2)+' at '+new Date().toLocaleTimeString());
-      }else if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000&&markets[5]){
-        // Fallback to Chainlink
-        markets[5].priceToBeat=latestChainlinkPrice;
-        savePtb(latestChainlinkPrice);
-        console.log('🎯 PTB SET (Chainlink fallback): $'+latestChainlinkPrice.toFixed(2));
-      }else{
-        console.log('⚠️ No PTB source at boundary — retrying...');
-        // Retry every 1s for up to 8s
-        let retries=0;
-        const retryPtb=setInterval(async()=>{
-          retries++;
-          const p=await fetchPolymarketPtb();
-          if(p&&markets[5]){
-            markets[5].priceToBeat=p;savePtb(p);
-            console.log('🎯 PTB SET (Polymarket retry #'+retries+'): $'+p.toFixed(2));
-            clearInterval(retryPtb);
-          }else if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<15000&&markets[5]){
-            markets[5].priceToBeat=latestChainlinkPrice;savePtb(latestChainlinkPrice);
-            console.log('🎯 PTB SET (Chainlink retry #'+retries+'): $'+latestChainlinkPrice.toFixed(2));
-            clearInterval(retryPtb);
-          }else if(retries>=8){
-            clearInterval(retryPtb);
-            console.log('❌ No PTB after 8 retries');
-          }
-        },1000);
+  setTimeout(()=>{
+    // Wait briefly for the first Chainlink tick of the new slot
+    let attempts=0;
+    const tryCapture=setInterval(()=>{
+      attempts++;
+      const currentSlot=Math.floor(Date.now()/300000);
+      // Check if candle builder has started a new candle for this slot
+      if(currentChainlinkCandle&&currentChainlinkCandle.slot===currentSlot&&markets[5]){
+        markets[5].priceToBeat=currentChainlinkCandle.open;
+        savePtb(currentChainlinkCandle.open);
+        console.log('🎯 PTB SET (Chainlink candle open): $'+currentChainlinkCandle.open.toFixed(2)+' at '+new Date().toLocaleTimeString());
+        clearInterval(tryCapture);
+      }else if(attempts>=20){
+        // 10s without Chainlink tick — use latest known price
+        if(latestChainlinkPrice&&markets[5]){
+          markets[5].priceToBeat=latestChainlinkPrice;
+          savePtb(latestChainlinkPrice);
+          console.log('⚠️ PTB SET (latest Chainlink, no new tick): $'+latestChainlinkPrice.toFixed(2));
+        }
+        clearInterval(tryCapture);
       }
-    },2000);
+    },500);
     schedulePtbCapture();
   },delay);
 }
@@ -1502,32 +1479,40 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
-    // Capture PTB on slot change — try Polymarket API (async, non-blocking)
-    const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-    if(clFresh){
-      m.priceToBeat=latestChainlinkPrice;
-      if(tf===5)savePtb(latestChainlinkPrice);
-      console.log('🎯 PTB on slot change ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (Chainlink, may update from API)');
-    }else if(!m.priceToBeat){
-      m.priceToBeat=price;
-      if(tf===5)savePtb(price);
-      console.log('⚠️ PTB fallback ['+tf+'m]: $'+price.toFixed(2)+' (no Chainlink)');
-    }
-    // For 5m, also kick off an API fetch to get exact PTB (overwrites Chainlink if found)
-    if(tf===5){
-      fetchPolymarketPtb().then(p=>{
-        if(p&&markets[5]){markets[5].priceToBeat=p;savePtb(p);console.log('🎯 PTB updated from API on slot change: $'+p.toFixed(2))}
-      }).catch(()=>{});
+    // Capture PTB on slot change from Chainlink candle open
+    const currentSlot=Math.floor(Date.now()/300000);
+    if(tf===5&&currentChainlinkCandle&&currentChainlinkCandle.slot===currentSlot){
+      m.priceToBeat=currentChainlinkCandle.open;
+      savePtb(currentChainlinkCandle.open);
+      console.log('🎯 PTB on slot change [5m]: $'+currentChainlinkCandle.open.toFixed(2)+' (candle open)');
+    }else{
+      const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+      if(clFresh){
+        m.priceToBeat=latestChainlinkPrice;
+        if(tf===5)savePtb(latestChainlinkPrice);
+        console.log('🎯 PTB on slot change ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (latest Chainlink)');
+      }else if(!m.priceToBeat){
+        m.priceToBeat=price;
+        if(tf===5)savePtb(price);
+        console.log('⚠️ PTB fallback ['+tf+'m]: $'+price.toFixed(2));
+      }
     }
   }
   if(m.currentSlot!==currentSlot){
     m.currentSlot=currentSlot;
-    // On first detection (startup), set PTB from Chainlink or fallback
+    // On first detection (startup), set PTB from candle open or Chainlink
     if(m.priceToBeat===null){
-      const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-      m.priceToBeat=clFresh?latestChainlinkPrice:price;
-      if(tf===5)savePtb(m.priceToBeat);
-      console.log('🎯 PTB first detect ['+tf+'m]: $'+m.priceToBeat.toFixed(2)+(clFresh?' (Chainlink)':' (fallback)'));
+      const cs=Math.floor(Date.now()/300000);
+      if(tf===5&&currentChainlinkCandle&&currentChainlinkCandle.slot===cs){
+        m.priceToBeat=currentChainlinkCandle.open;
+        savePtb(currentChainlinkCandle.open);
+        console.log('🎯 PTB first detect [5m]: $'+currentChainlinkCandle.open.toFixed(2)+' (candle open)');
+      }else{
+        const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+        m.priceToBeat=clFresh?latestChainlinkPrice:price;
+        if(tf===5)savePtb(m.priceToBeat);
+        console.log('🎯 PTB first detect ['+tf+'m]: $'+m.priceToBeat.toFixed(2)+(clFresh?' (Chainlink)':' (fallback)'));
+      }
     }
   }
   }catch(slotErr){console.error('❌ Slot update error ['+tf+'m]:',slotErr)}
