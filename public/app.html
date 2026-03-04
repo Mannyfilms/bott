@@ -441,6 +441,10 @@ let btcWs=null,latestBtcPrice=null,latestBtcPriceTime=0;
 let polyWs=null,latestChainlinkPrice=null,latestChainlinkPriceTime=0;
 let lastChainlinkSlot=null;
 
+// ═══ CHAINLINK TICK BUFFER ═══
+// Store recent ticks so we can find the price closest to the exact boundary
+let chainlinkTickBuffer=[];  // [{price, time}, ...] last ~60 ticks
+
 // ═══ CHAINLINK CANDLE BUILDER ═══
 // Builds 5-min candles from Chainlink ticks (same source as Polymarket)
 let chainlinkCandles=[];
@@ -448,7 +452,27 @@ let currentChainlinkCandle=null;
 
 function getChainlinkSlot(ts){return Math.floor(ts/300000)}
 
+// Find the Chainlink tick closest to a given timestamp
+function getChainlinkPriceAtTime(targetMs){
+  if(!chainlinkTickBuffer.length)return null;
+  let best=null,bestDist=Infinity;
+  for(const tick of chainlinkTickBuffer){
+    const dist=Math.abs(tick.time-targetMs);
+    if(dist<bestDist){bestDist=dist;best=tick;}
+  }
+  // Only use if within 5 seconds of target
+  if(best&&bestDist<5000){
+    console.log('🎯 Closest tick to boundary: $'+best.price.toFixed(2)+' ('+bestDist+'ms off)');
+    return best.price;
+  }
+  return null;
+}
+
 function processChainlinkTick(price, timestamp){
+  // Store in tick buffer for boundary lookup
+  chainlinkTickBuffer.push({price, time:timestamp});
+  if(chainlinkTickBuffer.length>120)chainlinkTickBuffer.shift();
+  
   const slot=getChainlinkSlot(timestamp);
   
   if(!currentChainlinkCandle||currentChainlinkCandle.slot!==slot){
@@ -507,36 +531,29 @@ async function loadPtb(){
 }
 loadPtb();
 
-// ═══ PTB: Use Chainlink candle open price (same source as Polymarket) ═══
-// The first Chainlink tick in each 5-min slot IS the PTB.
-// processChainlinkTick() already captures this as currentChainlinkCandle.open
+// ═══ PTB: Find Chainlink price closest to exact 5-minute boundary ═══
 function schedulePtbCapture(){
   const now=Date.now(),slotMs=300000;
   const nextBoundary=Math.ceil(now/slotMs)*slotMs;
   const delay=nextBoundary-now;
   console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
   setTimeout(()=>{
-    // Wait briefly for the first Chainlink tick of the new slot
-    let attempts=0;
-    const tryCapture=setInterval(()=>{
-      attempts++;
-      const currentSlot=Math.floor(Date.now()/300000);
-      // Check if candle builder has started a new candle for this slot
-      if(currentChainlinkCandle&&currentChainlinkCandle.slot===currentSlot&&markets[5]){
-        markets[5].priceToBeat=currentChainlinkCandle.open;
-        savePtb(currentChainlinkCandle.open);
-        console.log('🎯 PTB SET (Chainlink candle open): $'+currentChainlinkCandle.open.toFixed(2)+' at '+new Date().toLocaleTimeString());
-        clearInterval(tryCapture);
-      }else if(attempts>=20){
-        // 10s without Chainlink tick — use latest known price
-        if(latestChainlinkPrice&&markets[5]){
-          markets[5].priceToBeat=latestChainlinkPrice;
-          savePtb(latestChainlinkPrice);
-          console.log('⚠️ PTB SET (latest Chainlink, no new tick): $'+latestChainlinkPrice.toFixed(2));
-        }
-        clearInterval(tryCapture);
+    const boundaryMs=Math.floor(Date.now()/slotMs)*slotMs;
+    // Wait 2s for ticks around the boundary to arrive, then pick closest
+    setTimeout(()=>{
+      const exactPrice=getChainlinkPriceAtTime(boundaryMs);
+      if(exactPrice&&markets[5]){
+        markets[5].priceToBeat=exactPrice;
+        savePtb(exactPrice);
+        console.log('🎯 PTB SET (closest to boundary): $'+exactPrice.toFixed(2));
+      }else if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000&&markets[5]){
+        markets[5].priceToBeat=latestChainlinkPrice;
+        savePtb(latestChainlinkPrice);
+        console.log('🎯 PTB SET (latest Chainlink): $'+latestChainlinkPrice.toFixed(2));
+      }else{
+        console.log('⚠️ No Chainlink data at boundary');
       }
-    },500);
+    },2000);
     schedulePtbCapture();
   },delay);
 }
@@ -1505,18 +1522,19 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
-    // Capture PTB on slot change from Chainlink candle open
-    const currentSlot=Math.floor(Date.now()/300000);
-    if(tf===5&&currentChainlinkCandle&&currentChainlinkCandle.slot===currentSlot){
-      m.priceToBeat=currentChainlinkCandle.open;
-      savePtb(currentChainlinkCandle.open);
-      console.log('🎯 PTB on slot change [5m]: $'+currentChainlinkCandle.open.toFixed(2)+' (candle open)');
+    // Capture PTB on slot change — find tick closest to boundary
+    const boundaryMs=Math.floor(Date.now()/300000)*300000;
+    const exactPrice=getChainlinkPriceAtTime(boundaryMs);
+    if(exactPrice){
+      m.priceToBeat=exactPrice;
+      if(tf===5)savePtb(exactPrice);
+      console.log('🎯 PTB on slot change ['+tf+'m]: $'+exactPrice.toFixed(2)+' (closest to boundary)');
     }else{
       const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
       if(clFresh){
         m.priceToBeat=latestChainlinkPrice;
         if(tf===5)savePtb(latestChainlinkPrice);
-        console.log('🎯 PTB on slot change ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (latest Chainlink)');
+        console.log('🎯 PTB on slot change ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (latest)');
       }else if(!m.priceToBeat){
         m.priceToBeat=price;
         if(tf===5)savePtb(price);
@@ -1528,17 +1546,10 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentSlot=currentSlot;
     // On first detection (startup), set PTB from candle open or Chainlink
     if(m.priceToBeat===null){
-      const cs=Math.floor(Date.now()/300000);
-      if(tf===5&&currentChainlinkCandle&&currentChainlinkCandle.slot===cs){
-        m.priceToBeat=currentChainlinkCandle.open;
-        savePtb(currentChainlinkCandle.open);
-        console.log('🎯 PTB first detect [5m]: $'+currentChainlinkCandle.open.toFixed(2)+' (candle open)');
-      }else{
-        const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
-        m.priceToBeat=clFresh?latestChainlinkPrice:price;
-        if(tf===5)savePtb(m.priceToBeat);
-        console.log('🎯 PTB first detect ['+tf+'m]: $'+m.priceToBeat.toFixed(2)+(clFresh?' (Chainlink)':' (fallback)'));
-      }
+      const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
+      m.priceToBeat=clFresh?latestChainlinkPrice:price;
+      if(tf===5)savePtb(m.priceToBeat);
+      console.log('🎯 PTB first detect ['+tf+'m]: $'+m.priceToBeat.toFixed(2)+(clFresh?' (Chainlink)':' (fallback)'));
     }
   }
   }catch(slotErr){console.error('❌ Slot update error ['+tf+'m]:',slotErr)}
