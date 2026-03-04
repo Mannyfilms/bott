@@ -1230,9 +1230,12 @@ sigs.push({name:'Avg Distance',signal:(avgDiff>0?'+':'')+avgDiff.toFixed(2),stre
 sigs.push({name:'Trend',signal:trend>0?'Moving UP':'Moving DOWN',strength:Math.min(Math.abs(trend),3)});
 sigs.push({name:'Current',signal:aboveNow?'ABOVE PTB':'BELOW PTB',strength:gap>20?3:gap>5?2:1});
 
-const gapConf=Math.min(gap/50*15,15);
-const timeConf=dominance*15;
-const confidence=Math.max(85,Math.min(98,85+gapConf+timeConf)).toFixed(1);
+// Confidence: 59-98% range
+// Small gap + mixed position = low confidence, big gap + strong dominance = high
+const gapConf=Math.min(gap/100*15,15); // $100 gap → +15
+const timeConf=dominance*16; // 100% one-sided → +16
+const trendConf=Math.abs(trend)>5?4:Math.abs(trend)>2?2:0;
+const confidence=Math.max(59,Math.min(98,59+gapConf+timeConf+trendConf)).toFixed(1);
 
 let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
 try{feat=extractFeat(prices,volumes)}catch(e){}
