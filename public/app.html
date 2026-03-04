@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -13,115 +14,118 @@
         body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;-webkit-font-smoothing:antialiased;overflow-x:hidden}
         .shell{max-width:1320px;margin:0 auto;padding:20px 20px 60px}
 
-        /* NAV */
-        .nav{display:flex;align-items:center;gap:14px;padding:14px 0 20px;border-bottom:1px solid var(--bd);margin-bottom:22px}
-        .nav-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(140deg,var(--btc),#e07c0e);display:grid;place-items:center;font-size:16px;flex-shrink:0}
-        .nav-text h1{font-size:1.05em;font-weight:600;letter-spacing:-.01em}
-        .nav-text span{font-size:.72em;color:var(--tx3)}
-        .nav-right{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-        .nav-user{font-size:.8em;color:var(--tx2);padding:0 10px}
+```
+    /* NAV */
+    .nav{display:flex;align-items:center;gap:14px;padding:14px 0 20px;border-bottom:1px solid var(--bd);margin-bottom:22px}
+    .nav-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(140deg,var(--btc),#e07c0e);display:grid;place-items:center;font-size:16px;flex-shrink:0}
+    .nav-text h1{font-size:1.05em;font-weight:600;letter-spacing:-.01em}
+    .nav-text span{font-size:.72em;color:var(--tx3)}
+    .nav-right{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+    .nav-user{font-size:.8em;color:var(--tx2);padding:0 10px}
 
-        .btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border:none;border-radius:var(--rs);font-family:'Outfit',sans-serif;font-size:.8em;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap}
-        .btn-go{background:linear-gradient(140deg,var(--btc),#e07c0e);color:#fff;box-shadow:0 2px 10px rgba(247,147,26,.15)}
-        .btn-go:hover{box-shadow:0 3px 16px rgba(247,147,26,.22);transform:translateY(-1px)}
-        .btn-g{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
-        .btn-g:hover{background:var(--sf3);color:var(--tx)}
-        .btn-r{background:var(--dns);color:var(--dn);border:1px solid rgba(255,71,87,.12)}
-        .btn-r:hover{background:var(--dnm)}
-        .btn:disabled{opacity:.35;cursor:not-allowed;transform:none!important}
-        .tf-btn{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd);padding:10px 24px;font-size:.85em;font-weight:600;letter-spacing:.02em}
-        .tf-btn:hover{background:var(--sf3);color:var(--tx)}
-        .tf-active{background:linear-gradient(140deg,var(--btc),#e07c0e)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 2px 12px rgba(247,147,26,.2)}
+    .btn{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border:none;border-radius:var(--rs);font-family:'Outfit',sans-serif;font-size:.8em;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap}
+    .btn-go{background:linear-gradient(140deg,var(--btc),#e07c0e);color:#fff;box-shadow:0 2px 10px rgba(247,147,26,.15)}
+    .btn-go:hover{box-shadow:0 3px 16px rgba(247,147,26,.22);transform:translateY(-1px)}
+    .btn-g{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
+    .btn-g:hover{background:var(--sf3);color:var(--tx)}
+    .btn-r{background:var(--dns);color:var(--dn);border:1px solid rgba(255,71,87,.12)}
+    .btn-r:hover{background:var(--dnm)}
+    .btn:disabled{opacity:.35;cursor:not-allowed;transform:none!important}
+    .tf-btn{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd);padding:10px 24px;font-size:.85em;font-weight:600;letter-spacing:.02em}
+    .tf-btn:hover{background:var(--sf3);color:var(--tx)}
+    .tf-active{background:linear-gradient(140deg,var(--btc),#e07c0e)!important;color:#fff!important;border-color:transparent!important;box-shadow:0 2px 12px rgba(247,147,26,.2)}
 
-        .disc{display:flex;align-items:center;gap:8px;padding:9px 15px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:20px;font-size:.76em;color:var(--tx3);line-height:1.4}
-        .disc svg{flex-shrink:0;opacity:.45}
+    .disc{display:flex;align-items:center;gap:8px;padding:9px 15px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);margin-bottom:20px;font-size:.76em;color:var(--tx3);line-height:1.4}
+    .disc svg{flex-shrink:0;opacity:.45}
 
-        .card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:22px;margin-bottom:14px;transition:border-color .2s}
-        .card:hover{border-color:var(--bdh)}
-        .ct{font-size:.68em;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--tx3);margin-bottom:16px}
+    .card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:22px;margin-bottom:14px;transition:border-color .2s}
+    .card:hover{border-color:var(--bdh)}
+    .ct{font-size:.68em;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--tx3);margin-bottom:16px}
 
-        .g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-        .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-        .g6{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:10px}
-        @media(max-width:768px){
-          .g2,.g3{grid-template-columns:1fr}
-          .nav{flex-wrap:wrap;gap:8px;padding:10px}
-          .nav-right{width:100%;justify-content:flex-end}
-          .shell{padding:10px 10px 40px}
-          .card{padding:14px}
-          .price-big{font-size:1.6em}
-          .pred{padding:16px}
-          #predictionValue{font-size:1.8em}
-          .sig{font-size:.72em;padding:5px 8px}
-          h1{font-size:1.1em}
-        }
-        /* Light mode */
-        .light-mode{--bg:#f5f5f7;--sf1:#ffffff;--sf2:#f0f0f3;--sf3:#e5e5ea;--tx1:#1d1d1f;--tx2:#6e6e73;--tx3:#8e8e93;--bd:rgba(0,0,0,.08)}
-        .light-mode .card{box-shadow:0 1px 4px rgba(0,0,0,.08)}
-        .light-mode .pred-up{background:linear-gradient(135deg,#d4edda,#c3e6cb)}
-        .light-mode .pred-dn{background:linear-gradient(135deg,#f8d7da,#f5c6cb)}
-        .light-mode .nav{background:rgba(255,255,255,.85)}
-        .light-mode .sig{background:var(--sf2)}
-        .theme-toggle{cursor:pointer;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:6px 12px;color:var(--tx2);font-size:.8em}
+    .g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+    .g6{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:10px}
+    @media(max-width:768px){
+      .g2,.g3{grid-template-columns:1fr}
+      .nav{flex-wrap:wrap;gap:8px;padding:10px}
+      .nav-right{width:100%;justify-content:flex-end}
+      .shell{padding:10px 10px 40px}
+      .card{padding:14px}
+      .price-big{font-size:1.6em}
+      .pred{padding:16px}
+      #predictionValue{font-size:1.8em}
+      .sig{font-size:.72em;padding:5px 8px}
+      h1{font-size:1.1em}
+    }
+    /* Light mode */
+    .light-mode{--bg:#f5f5f7;--sf1:#ffffff;--sf2:#f0f0f3;--sf3:#e5e5ea;--tx1:#1d1d1f;--tx2:#6e6e73;--tx3:#8e8e93;--bd:rgba(0,0,0,.08)}
+    .light-mode .card{box-shadow:0 1px 4px rgba(0,0,0,.08)}
+    .light-mode .pred-up{background:linear-gradient(135deg,#d4edda,#c3e6cb)}
+    .light-mode .pred-dn{background:linear-gradient(135deg,#f8d7da,#f5c6cb)}
+    .light-mode .nav{background:rgba(255,255,255,.85)}
+    .light-mode .sig{background:var(--sf2)}
+    .theme-toggle{cursor:pointer;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:6px 12px;color:var(--tx2);font-size:.8em}
 
-        .status{padding:10px 16px;background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);text-align:center;font-size:.82em;color:var(--tx2);margin-bottom:12px}
-        .mlbar{padding:10px 16px;background:var(--bls);border:1px solid rgba(99,107,255,.1);border-radius:var(--rs);font-size:.76em;color:var(--bl);line-height:1.7}
+    .status{padding:10px 16px;background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);text-align:center;font-size:.82em;color:var(--tx2);margin-bottom:12px}
+    .mlbar{padding:10px 16px;background:var(--bls);border:1px solid rgba(99,107,255,.1);border-radius:var(--rs);font-size:.76em;color:var(--bl);line-height:1.7}
 
-        .plbl{font-size:.68em;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:4px}
-        .pbig{font-family:'JetBrains Mono',monospace;font-size:2.1em;font-weight:700;letter-spacing:-.03em}
-        .psub{font-size:.72em;color:var(--tx3);margin-top:3px}
+    .plbl{font-size:.68em;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:4px}
+    .pbig{font-family:'JetBrains Mono',monospace;font-size:2.1em;font-weight:700;letter-spacing:-.03em}
+    .psub{font-size:.72em;color:var(--tx3);margin-top:3px}
 
-        .vs{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:14px;text-align:center;margin-top:14px}
-        .vsl{font-size:.66em;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:5px}
-        .vsv{font-family:'JetBrains Mono',monospace;font-size:1.1em;font-weight:600}
+    .vs{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:14px;text-align:center;margin-top:14px}
+    .vsl{font-size:.66em;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:5px}
+    .vsv{font-family:'JetBrains Mono',monospace;font-size:1.1em;font-weight:600}
 
-        .pred{padding:20px;border-radius:var(--r);text-align:center}
-        .pred-up{background:var(--ups);border:1px solid rgba(0,220,130,.12)}
-        .pred-dn{background:var(--dns);border:1px solid rgba(255,71,87,.12)}
-        .pred-nu{background:var(--sf2);border:1px solid var(--bd)}
-        .pred-info{background:var(--btcs);border:1px solid rgba(247,147,26,.1)}
-        .pred h3{font-size:.74em;font-weight:500;color:var(--tx2);margin-bottom:8px}
-        .pred .val{font-family:'JetBrains Mono',monospace;font-size:1.4em;font-weight:700}
-        .pred .conf{font-size:.76em;color:var(--tx2);margin-top:6px}
+    .pred{padding:20px;border-radius:var(--r);text-align:center}
+    .pred-up{background:var(--ups);border:1px solid rgba(0,220,130,.12)}
+    .pred-dn{background:var(--dns);border:1px solid rgba(255,71,87,.12)}
+    .pred-nu{background:var(--sf2);border:1px solid var(--bd)}
+    .pred-info{background:var(--btcs);border:1px solid rgba(247,147,26,.1)}
+    .pred h3{font-size:.74em;font-weight:500;color:var(--tx2);margin-bottom:8px}
+    .pred .val{font-family:'JetBrains Mono',monospace;font-size:1.4em;font-weight:700}
+    .pred .conf{font-size:.76em;color:var(--tx2);margin-top:6px}
 
-        .cftrack{width:100%;height:6px;background:var(--sf3);border-radius:3px;overflow:hidden;margin:12px 0 4px}
-        .cffill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--up),#00b86e);transition:width .5s}
-        .cflbl{text-align:right;font-family:'JetBrains Mono',monospace;font-size:.72em;color:var(--tx3)}
-        .skipmsg{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:10px;text-align:center;font-size:.78em;color:var(--tx3);margin-top:10px;display:none}
+    .cftrack{width:100%;height:6px;background:var(--sf3);border-radius:3px;overflow:hidden;margin:12px 0 4px}
+    .cffill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--up),#00b86e);transition:width .5s}
+    .cflbl{text-align:right;font-family:'JetBrains Mono',monospace;font-size:.72em;color:var(--tx3)}
+    .skipmsg{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:10px;text-align:center;font-size:.78em;color:var(--tx3);margin-top:10px;display:none}
 
-        .mc{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:15px}
-        .mc h4{font-size:.68em;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:8px}
-        .mc .mp{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.88em}
-        .mc .mcc{font-size:.75em;color:var(--tx3);margin-top:3px}
+    .mc{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:15px}
+    .mc h4{font-size:.68em;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:8px}
+    .mc .mp{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.88em}
+    .mc .mcc{font-size:.75em;color:var(--tx3);margin-top:3px}
 
-        .pat{background:var(--btcs);border:1px solid rgba(247,147,26,.12);border-radius:var(--rs);padding:10px 16px;font-size:.82em;color:var(--btc);margin-top:10px;display:none;font-weight:500}
-        .sigw{background:var(--sf2);border-radius:var(--rs);padding:16px;margin-top:14px}
-        .sigw h3{font-size:.68em;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:10px}
-        .sig{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;margin:4px 0;background:var(--sf);border-radius:6px;font-size:.78em;border-left:3px solid var(--bd)}
-        .sig-u{border-left-color:var(--up)}.sig-d{border-left-color:var(--dn)}
+    .pat{background:var(--btcs);border:1px solid rgba(247,147,26,.12);border-radius:var(--rs);padding:10px 16px;font-size:.82em;color:var(--btc);margin-top:10px;display:none;font-weight:500}
+    .sigw{background:var(--sf2);border-radius:var(--rs);padding:16px;margin-top:14px}
+    .sigw h3{font-size:.68em;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:10px}
+    .sig{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;margin:4px 0;background:var(--sf);border-radius:6px;font-size:.78em;border-left:3px solid var(--bd)}
+    .sig-u{border-left-color:var(--up)}.sig-d{border-left-color:var(--dn)}
 
-        .chip{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:11px 13px}
-        .chip .cl{font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:4px}
-        .chip .cv{font-family:'JetBrains Mono',monospace;font-size:.86em;font-weight:600}
-        .echip{background:var(--btcs);border:1px solid rgba(247,147,26,.08);border-radius:var(--rs);padding:11px 13px}
-        .echip .cl{font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:rgba(247,147,26,.5);margin-bottom:4px}
-        .echip .cv{font-family:'JetBrains Mono',monospace;font-size:.86em;font-weight:600;color:var(--btc)}
+    .chip{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:11px 13px}
+    .chip .cl{font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:4px}
+    .chip .cv{font-family:'JetBrains Mono',monospace;font-size:.86em;font-weight:600}
+    .echip{background:var(--btcs);border:1px solid rgba(247,147,26,.08);border-radius:var(--rs);padding:11px 13px}
+    .echip .cl{font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:rgba(247,147,26,.5);margin-bottom:4px}
+    .echip .cv{font-family:'JetBrains Mono',monospace;font-size:.86em;font-weight:600;color:var(--btc)}
 
-        .sbox{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:14px;text-align:center}
-        .sbox .sl{font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:5px}
-        .sbox .sv{font-family:'JetBrains Mono',monospace;font-size:1.3em;font-weight:700;color:var(--btc)}
+    .sbox{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:14px;text-align:center}
+    .sbox .sl{font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:5px}
+    .sbox .sv{font-family:'JetBrains Mono',monospace;font-size:1.3em;font-weight:700;color:var(--btc)}
 
-        .perf{background:var(--sf2);border-radius:var(--rs);padding:14px;margin-top:14px}
-        .perf h3{font-size:.68em;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:10px}
-        .prow{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--sf);margin:3px 0;border-radius:5px;font-size:.78em}
+    .perf{background:var(--sf2);border-radius:var(--rs);padding:14px;margin-top:14px}
+    .perf h3{font-size:.68em;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);margin-bottom:10px}
+    .prow{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--sf);margin:3px 0;border-radius:5px;font-size:.78em}
 
-        .hist{max-height:330px;overflow-y:auto;margin-top:10px}
-        .hist::-webkit-scrollbar{width:3px}
-        .hist::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
-        .hitem{padding:11px;border-bottom:1px solid var(--bd);font-size:.8em}
-        .hitem:last-child{border-bottom:none}
-        .correct{color:var(--up);font-weight:600}.incorrect{color:var(--dn);font-weight:600}
-    </style>
+    .hist{max-height:330px;overflow-y:auto;margin-top:10px}
+    .hist::-webkit-scrollbar{width:3px}
+    .hist::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
+    .hitem{padding:11px;border-bottom:1px solid var(--bd);font-size:.8em}
+    .hitem:last-child{border-bottom:none}
+    .correct{color:var(--up);font-weight:600}.incorrect{color:var(--dn);font-weight:600}
+</style>
+```
+
 </head>
 <body>
 <div class="shell">
@@ -138,100 +142,102 @@
         </div>
     </nav>
 
-    <div class="disc">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        Predictions are not 100% accurate and can make mistakes. Use as a reference, not financial advice. Progress auto-saves.
-    </div>
-    <div class="disc" style="background:rgba(247,181,56,.08);border-color:rgba(247,181,56,.25);color:#d4a017">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        Please keep this tab open &mdash; switching away or minimising may delay price updates from the WebSocket feed.
-    </div>
+```
+<div class="disc">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    Predictions are not 100% accurate and can make mistakes. Use as a reference, not financial advice. Progress auto-saves.
+</div>
+<div class="disc" style="background:rgba(247,181,56,.08);border-color:rgba(247,181,56,.25);color:#d4a017">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    Please keep this tab open &mdash; switching away or minimising may delay price updates from the WebSocket feed.
+</div>
 
-    <div class="card">
-        <div class="ct">Market Status</div>
-        <div class="status" id="status">Ready &mdash; Click Start</div>
-        <div class="mlbar" id="mlStatus">Ensemble: Initializing &middot; LSTM: Not trained &middot; Pattern Recognition: Active</div>
-        <div class="g2" style="margin-top:16px">
-            <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbLabel">Set at 5-minute mark</div></div>
-            <div style="text-align:center"><div class="plbl">Current Price</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
+<div class="card">
+    <div class="ct">Market Status</div>
+    <div class="status" id="status">Ready &mdash; Click Start</div>
+    <div class="mlbar" id="mlStatus">Ensemble: Initializing &middot; LSTM: Not trained &middot; Pattern Recognition: Active</div>
+    <div class="g2" style="margin-top:16px">
+        <div style="text-align:center"><div class="plbl">Price to Beat</div><div class="pbig" id="priceToBeat" style="color:var(--tx2)">--</div><div class="psub" id="ptbLabel">Set at 5-minute mark</div></div>
+        <div style="text-align:center"><div class="plbl">Current Price</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
+    </div>
+    <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
+</div>
+
+<div class="card">
+    <div class="ct">Prediction &amp; Confidence</div>
+    <div class="g2">
+        <div class="pred pred-nu" id="predictionDisplay"><h3>Ensemble Prediction</h3><div class="val" id="predictionValue">--</div><div class="conf" id="predictionConfidence">--</div><div style="margin-top:6px;font-size:.75em;color:var(--tx3)" id="predictionDetails">--</div></div>
+        <div class="pred pred-info"><h3>Next Check</h3><div style="font-family:'JetBrains Mono',monospace;font-size:1.25em;font-weight:700;color:var(--btc);margin:8px 0" id="nextCheckTime">--</div><div style="font-size:.73em;color:var(--tx2);line-height:1.8">3 ML Models &middot; 15+ Indicators<br>Sentiment &middot; Pattern Recognition</div></div>
+    </div>
+    <div><div class="cflbl"><span id="confPercent">0%</span></div><div class="cftrack"><div class="cffill" id="confidenceMeter" style="width:0%"></div></div></div>
+    <div class="g3" style="margin-top:12px">
+        <div class="mc"><h4>LSTM</h4><div class="mp" id="model1Pred">--</div><div class="mcc" id="model1Conf">--%</div></div>
+        <div class="mc"><h4>Technical</h4><div class="mp" id="model2Pred">--</div><div class="mcc" id="model2Conf">--%</div></div>
+        <div class="mc"><h4>Hybrid</h4><div class="mp" id="model3Pred">--</div><div class="mcc" id="model3Conf">--%</div></div>
+    </div>
+    <div class="pat" id="patternSection"><span id="patternName"></span></div>
+    <div class="sigw"><h3>Signal Breakdown</h3><div id="signalList" style="color:var(--tx3);font-size:.8em">Waiting&hellip;</div></div>
+</div>
+
+<div class="card">
+    <div class="ct">Market Sentiment</div>
+    <div class="g6">
+        <div class="echip"><div class="cl">Fear &amp; Greed</div><div class="cv" id="fearGreed">--</div></div>
+        <div class="echip"><div class="cl">Sentiment</div><div class="cv" id="sentiment">--</div></div>
+        <div class="echip"><div class="cl">BTC Dominance</div><div class="cv" id="btcDominance">--</div></div>
+        <div class="echip"><div class="cl">Funding Rate</div><div class="cv" id="fundingRate">--</div></div>
+        <div class="echip"><div class="cl">Exchange Flow</div><div class="cv" id="exchangeFlow">--</div></div>
+        <div class="echip"><div class="cl">Whale Activity</div><div class="cv" id="whaleActivity">--</div></div>
+    </div>
+</div>
+
+<!-- Hidden: JS needs these IDs -->
+<div style="display:none"><span id="sma5"></span><span id="sma10"></span><span id="sma20"></span><span id="ema12"></span><span id="rsi"></span><span id="stochastic"></span><span id="bbUpper"></span><span id="bbLower"></span><span id="macd"></span><span id="atr"></span><span id="volumeTrend"></span><span id="momentum"></span><span id="themeBtn"></span></div>
+
+<!-- Hidden: JS needs these IDs -->
+<div style="display:none">
+    <span id="totalPredictions"></span><span id="correctPredictions"></span><span id="accuracyRate"></span>
+    <span id="highConfAccuracy"></span><span id="winStreak"></span><span id="skippedCount"></span>
+    <div id="signalPerformance"></div>
+</div>
+
+<!-- HOW IT WORKS -->
+<div class="card">
+    <div class="ct">How Our Predictions Work</div>
+    <div style="font-size:.85em;color:var(--tx2);line-height:1.85">
+        <p style="margin-bottom:14px">Our system loads <strong style="color:var(--tx)">200 historical candlesticks</strong> from Binance on startup, then combines <strong style="color:var(--tx)">15+ trading strategies</strong> with 3 ML models and real-time market data.</p>
+
+        <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
+            <div style="color:var(--btc);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9881; Historical Data Engine</div>
+            <p><strong style="color:var(--tx)">200 1-Min Candles</strong> &mdash; Full OHLCV data loaded on startup from Binance, giving indicators real history immediately. No warmup needed.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">100 5-Min Candles</strong> &mdash; Bigger-picture context for trend analysis and VWAP calculations. Refreshed every 60 seconds.</p>
         </div>
-        <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
-    </div>
 
-    <div class="card">
-        <div class="ct">Prediction &amp; Confidence</div>
-        <div class="g2">
-            <div class="pred pred-nu" id="predictionDisplay"><h3>Ensemble Prediction</h3><div class="val" id="predictionValue">--</div><div class="conf" id="predictionConfidence">--</div><div style="margin-top:6px;font-size:.75em;color:var(--tx3)" id="predictionDetails">--</div></div>
-            <div class="pred pred-info"><h3>Next Check</h3><div style="font-family:'JetBrains Mono',monospace;font-size:1.25em;font-weight:700;color:var(--btc);margin:8px 0" id="nextCheckTime">--</div><div style="font-size:.73em;color:var(--tx2);line-height:1.8">3 ML Models &middot; 15+ Indicators<br>Sentiment &middot; Pattern Recognition</div></div>
+        <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
+            <div style="color:var(--up);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9889; 15+ Trading Strategies</div>
+            <p><strong style="color:var(--tx)">VWAP</strong> &mdash; Volume Weighted Average Price, used by institutions. Price above VWAP = bullish.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">EMA Ribbon (8/13/21/55)</strong> &mdash; When EMAs stack in order, strong trend confirmed.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">Mean Reversion (Z-Score)</strong> &mdash; Detects overbought/oversold using statistical deviation. Key for 5-min windows.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">ADX Trend Strength</strong> &mdash; Measures trend intensity. >25 = strong trend, <25 = ranging.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">Williams %R, OBV, ROC, Stochastic, Bollinger Squeeze, Support/Resistance</strong> &mdash; Multiple confirming indicators reduce false signals.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">Candlestick Patterns</strong> &mdash; Doji, Hammer, Shooting Star, Engulfing patterns from real OHLC candle data.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">Buy/Sell Pressure</strong> &mdash; Real taker buy/sell ratio from Binance 24hr data.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">Contrarian Indicators</strong> &mdash; Fear &amp; Greed and Funding Rate used as contrarian signals (extreme fear = buy, extreme greed = sell).</p>
         </div>
-        <div><div class="cflbl"><span id="confPercent">0%</span></div><div class="cftrack"><div class="cffill" id="confidenceMeter" style="width:0%"></div></div></div>
-        <div class="g3" style="margin-top:12px">
-            <div class="mc"><h4>LSTM</h4><div class="mp" id="model1Pred">--</div><div class="mcc" id="model1Conf">--%</div></div>
-            <div class="mc"><h4>Technical</h4><div class="mp" id="model2Pred">--</div><div class="mcc" id="model2Conf">--%</div></div>
-            <div class="mc"><h4>Hybrid</h4><div class="mp" id="model3Pred">--</div><div class="mcc" id="model3Conf">--%</div></div>
-        </div>
-        <div class="pat" id="patternSection"><span id="patternName"></span></div>
-        <div class="sigw"><h3>Signal Breakdown</h3><div id="signalList" style="color:var(--tx3);font-size:.8em">Waiting&hellip;</div></div>
-    </div>
 
-    <div class="card">
-        <div class="ct">Market Sentiment</div>
-        <div class="g6">
-            <div class="echip"><div class="cl">Fear &amp; Greed</div><div class="cv" id="fearGreed">--</div></div>
-            <div class="echip"><div class="cl">Sentiment</div><div class="cv" id="sentiment">--</div></div>
-            <div class="echip"><div class="cl">BTC Dominance</div><div class="cv" id="btcDominance">--</div></div>
-            <div class="echip"><div class="cl">Funding Rate</div><div class="cv" id="fundingRate">--</div></div>
-            <div class="echip"><div class="cl">Exchange Flow</div><div class="cv" id="exchangeFlow">--</div></div>
-            <div class="echip"><div class="cl">Whale Activity</div><div class="cv" id="whaleActivity">--</div></div>
+        <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
+            <div style="color:var(--bl);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#128202; ML Ensemble</div>
+            <p><strong style="color:var(--tx)">LSTM Neural Network</strong> &mdash; Sequential pattern analysis on 15-feature vectors.</p>
+            <p style="margin-top:8px"><strong style="color:var(--tx)">Technical &amp; Hybrid Models</strong> &mdash; Dense networks trained on live prediction results with adaptive weight optimization.</p>
+        </div>
+
+        <div style="background:var(--sf2);border-radius:var(--rs);padding:16px">
+            <div style="color:var(--btc);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#127919; Adaptive Signal Weighting</div>
+            <p>Each strategy's weight adjusts based on real accuracy. <strong style="color:var(--tx)">High-performing signals gain influence</strong>, underperformers lose weight. System self-improves over every 5-minute cycle.</p>
         </div>
     </div>
-
-    <!-- Hidden: JS needs these IDs -->
-    <div style="display:none"><span id="sma5"></span><span id="sma10"></span><span id="sma20"></span><span id="ema12"></span><span id="rsi"></span><span id="stochastic"></span><span id="bbUpper"></span><span id="bbLower"></span><span id="macd"></span><span id="atr"></span><span id="volumeTrend"></span><span id="momentum"></span><span id="themeBtn"></span></div>
-
-    <!-- Hidden: JS needs these IDs -->
-    <div style="display:none">
-        <span id="totalPredictions"></span><span id="correctPredictions"></span><span id="accuracyRate"></span>
-        <span id="highConfAccuracy"></span><span id="winStreak"></span><span id="skippedCount"></span>
-        <div id="signalPerformance"></div>
-    </div>
-
-    <!-- HOW IT WORKS -->
-    <div class="card">
-        <div class="ct">How Our Predictions Work</div>
-        <div style="font-size:.85em;color:var(--tx2);line-height:1.85">
-            <p style="margin-bottom:14px">Our system loads <strong style="color:var(--tx)">200 historical candlesticks</strong> from Binance on startup, then combines <strong style="color:var(--tx)">15+ trading strategies</strong> with 3 ML models and real-time market data.</p>
-
-            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
-                <div style="color:var(--btc);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9881; Historical Data Engine</div>
-                <p><strong style="color:var(--tx)">200 1-Min Candles</strong> &mdash; Full OHLCV data loaded on startup from Binance, giving indicators real history immediately. No warmup needed.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">100 5-Min Candles</strong> &mdash; Bigger-picture context for trend analysis and VWAP calculations. Refreshed every 60 seconds.</p>
-            </div>
-
-            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
-                <div style="color:var(--up);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#9889; 15+ Trading Strategies</div>
-                <p><strong style="color:var(--tx)">VWAP</strong> &mdash; Volume Weighted Average Price, used by institutions. Price above VWAP = bullish.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">EMA Ribbon (8/13/21/55)</strong> &mdash; When EMAs stack in order, strong trend confirmed.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">Mean Reversion (Z-Score)</strong> &mdash; Detects overbought/oversold using statistical deviation. Key for 5-min windows.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">ADX Trend Strength</strong> &mdash; Measures trend intensity. >25 = strong trend, <25 = ranging.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">Williams %R, OBV, ROC, Stochastic, Bollinger Squeeze, Support/Resistance</strong> &mdash; Multiple confirming indicators reduce false signals.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">Candlestick Patterns</strong> &mdash; Doji, Hammer, Shooting Star, Engulfing patterns from real OHLC candle data.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">Buy/Sell Pressure</strong> &mdash; Real taker buy/sell ratio from Binance 24hr data.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">Contrarian Indicators</strong> &mdash; Fear &amp; Greed and Funding Rate used as contrarian signals (extreme fear = buy, extreme greed = sell).</p>
-            </div>
-
-            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px;margin-bottom:12px">
-                <div style="color:var(--bl);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#128202; ML Ensemble</div>
-                <p><strong style="color:var(--tx)">LSTM Neural Network</strong> &mdash; Sequential pattern analysis on 15-feature vectors.</p>
-                <p style="margin-top:8px"><strong style="color:var(--tx)">Technical &amp; Hybrid Models</strong> &mdash; Dense networks trained on live prediction results with adaptive weight optimization.</p>
-            </div>
-
-            <div style="background:var(--sf2);border-radius:var(--rs);padding:16px">
-                <div style="color:var(--btc);font-weight:600;font-size:.82em;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">&#127919; Adaptive Signal Weighting</div>
-                <p>Each strategy's weight adjusts based on real accuracy. <strong style="color:var(--tx)">High-performing signals gain influence</strong>, underperformers lose weight. System self-improves over every 5-minute cycle.</p>
-            </div>
-        </div>
-    </div>
+</div>
+```
 
 </div>
 
@@ -305,6 +311,13 @@ function loadPredictionLock(){
     if(!d||!d.locked)return false;
     const currentSlot=Math.floor(Date.now()/300000);
     if(d.slot!==currentSlot)return false; // Different slot, don't restore
+    // Don't restore if we're very early in the slot — let analyzing phase run
+    const slotStart=currentSlot*300000;
+    const timeInSlot=(Date.now()-slotStart)/1000;
+    if(timeInSlot<90){
+      console.log('🔓 Lock exists but only '+Math.round(timeInSlot)+'s into slot — will re-analyze');
+      return false;
+    }
     predictionLock=d;
     console.log('🔒 Restored locked prediction: '+(d.direction?'YES ↑':'NO ↓')+' from slot '+d.slot);
     return true;
@@ -1267,6 +1280,7 @@ if(!pred||pred.willBeat===null)return;
 // The first 1-2 minutes of a slot are noise — price often reverses.
 // Lock in the 3:00-4:30 window based on accumulated position data.
 const timeInSlot=(selectedTimeframe*60*1000-(slotEnd-new Date()))/1000;
+if(timeInSlot<10||timeInSlot>290)console.log('⏱️ timeInSlot='+timeInSlot.toFixed(1)+'s, slotEnd='+slotEnd.toLocaleTimeString()+', now='+new Date().toLocaleTimeString());
 const priceAbovePtb=price>ptb;
 const priceDiff=Math.abs(price-ptb);
 
@@ -1275,7 +1289,7 @@ const priceDiff=Math.abs(price-ptb);
 const MIN_WAIT=90; // Even big gaps: analyze for at least 1.5 min
 const MAX_WAIT=150; // Small gap → lock by 2.5 min (leaves 2.5 min for user)
 const lockAfter=Math.max(MIN_WAIT, Math.min(MAX_WAIT, MAX_WAIT-Math.min(priceDiff,100)*0.9));
-const shouldLock=timeInSlot>=lockAfter;
+const shouldLock=timeInSlot>=lockAfter&&timeInSlot>30; // Never lock in first 30s
 
 // Too close to call: after max wait, gap is still tiny
 const TOO_CLOSE_THRESHOLD=5;
@@ -1290,6 +1304,7 @@ let displayConf=clampedConf;
 let lockStatus='';
 
 if(!predictionLock.locked){
+  console.log('🔍 LOCK CHECK: timeInSlot='+timeInSlot.toFixed(1)+'s, lockAfter='+lockAfter.toFixed(0)+'s, shouldLock='+shouldLock+', gap=$'+priceDiff.toFixed(0));
   if(isTooClose){
     predictionLock.locked=true;
     predictionLock.direction=null;
@@ -1333,6 +1348,7 @@ if(!predictionLock.locked){
     return;
   }
 }else{
+  console.log('🔒 Already locked: direction='+(predictionLock.direction?'YES':'NO')+', lockTime='+new Date(predictionLock.lockTime).toLocaleTimeString());
   if(predictionLock.direction===null){
     // Was skipped — keep showing skip state
     displaySignals(pred.signals);updateCountdown();
@@ -1620,5 +1636,6 @@ setInterval(()=>{
   }
 },8000);
 </script>
+
 </body>
 </html>
