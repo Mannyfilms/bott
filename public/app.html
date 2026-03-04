@@ -1303,6 +1303,13 @@ let displayWillBeat=finalPrediction;
 let displayConf=clampedConf;
 let lockStatus='';
 
+// FORCE RESET: if we're early in the slot, the lock MUST be stale
+if(timeInSlot<90&&predictionLock.locked){
+  console.log('🔓 FORCE RESET: locked but only '+timeInSlot.toFixed(0)+'s into slot — clearing stale lock');
+  predictionLock={locked:false,direction:null,lockPrice:null,lockTime:null,lockPtb:null,overrideThreshold:100};
+  try{localStorage.removeItem('predLock5m');localStorage.removeItem('currentPred5m')}catch(e){}
+}
+
 if(!predictionLock.locked){
   console.log('🔍 LOCK CHECK: timeInSlot='+timeInSlot.toFixed(1)+'s, lockAfter='+lockAfter.toFixed(0)+'s, shouldLock='+shouldLock+', gap=$'+priceDiff.toFixed(0));
   if(isTooClose){
