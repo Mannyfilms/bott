@@ -494,36 +494,59 @@ async function loadPtb(){
 }
 loadPtb();
 
-// ═══ PTB: Capture Chainlink price at exact 5-minute boundary ═══
-// Polymarket settles on Chainlink BTC/USD — this is the ONLY reliable source for PTB
+// ═══ PTB: Get exact PTB from Polymarket API, fallback to Chainlink ═══
+// Polymarket's market description contains the exact settlement price.
+// Chainlink WS can lag a few seconds, causing $2-5 drift.
+async function fetchPolymarketPtb(){
+  try{
+    const r=await fetch('/api/polymarket-odds');
+    const data=await r.json();
+    if(data.ptb&&data.ptb>50000&&data.ptb<200000)return data.ptb;
+  }catch(e){}
+  return null;
+}
+
 function schedulePtbCapture(){
   const now=Date.now(),slotMs=300000;
   const nextBoundary=Math.ceil(now/slotMs)*slotMs;
   const delay=nextBoundary-now;
   console.log('⏱️ Next PTB capture in '+(delay/1000).toFixed(1)+'s');
-  setTimeout(()=>{
-    // Only use Chainlink — that's what Polymarket settles on
-    if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000&&markets[5]){
-      markets[5].priceToBeat=latestChainlinkPrice;
-      savePtb(latestChainlinkPrice);
-      console.log('🎯 PTB SET (Chainlink): $'+latestChainlinkPrice.toFixed(2)+' at '+new Date().toLocaleTimeString());
-    }else{
-      console.log('⚠️ Chainlink stale at boundary — waiting for fresh data');
-      // Retry every 500ms for up to 5s to catch Chainlink
-      let retries=0;
-      const retryPtb=setInterval(()=>{
-        retries++;
-        if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<10000&&markets[5]){
-          markets[5].priceToBeat=latestChainlinkPrice;
-          savePtb(latestChainlinkPrice);
-          console.log('🎯 PTB SET (Chainlink retry #'+retries+'): $'+latestChainlinkPrice.toFixed(2));
-          clearInterval(retryPtb);
-        }else if(retries>=10){
-          clearInterval(retryPtb);
-          console.log('❌ No Chainlink data after 5s — PTB not set this slot');
-        }
-      },500);
-    }
+  setTimeout(async()=>{
+    // Wait 2s for Polymarket to publish the new market
+    setTimeout(async()=>{
+      // Try Polymarket API first — this is the exact settlement price
+      const polyPtb=await fetchPolymarketPtb();
+      if(polyPtb&&markets[5]){
+        markets[5].priceToBeat=polyPtb;
+        savePtb(polyPtb);
+        console.log('🎯 PTB SET (Polymarket API): $'+polyPtb.toFixed(2)+' at '+new Date().toLocaleTimeString());
+      }else if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000&&markets[5]){
+        // Fallback to Chainlink
+        markets[5].priceToBeat=latestChainlinkPrice;
+        savePtb(latestChainlinkPrice);
+        console.log('🎯 PTB SET (Chainlink fallback): $'+latestChainlinkPrice.toFixed(2));
+      }else{
+        console.log('⚠️ No PTB source at boundary — retrying...');
+        // Retry every 1s for up to 8s
+        let retries=0;
+        const retryPtb=setInterval(async()=>{
+          retries++;
+          const p=await fetchPolymarketPtb();
+          if(p&&markets[5]){
+            markets[5].priceToBeat=p;savePtb(p);
+            console.log('🎯 PTB SET (Polymarket retry #'+retries+'): $'+p.toFixed(2));
+            clearInterval(retryPtb);
+          }else if(latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<15000&&markets[5]){
+            markets[5].priceToBeat=latestChainlinkPrice;savePtb(latestChainlinkPrice);
+            console.log('🎯 PTB SET (Chainlink retry #'+retries+'): $'+latestChainlinkPrice.toFixed(2));
+            clearInterval(retryPtb);
+          }else if(retries>=8){
+            clearInterval(retryPtb);
+            console.log('❌ No PTB after 8 retries');
+          }
+        },1000);
+      }
+    },2000);
     schedulePtbCapture();
   },delay);
 }
@@ -1479,17 +1502,22 @@ if(priceHistory.length>500)priceHistory.shift();
     m.currentPrediction=null;
     if(tf===selectedTimeframe)resetPositionHistory();
     if(tf===selectedTimeframe)resetPredictionLock();
-    // Capture PTB on slot change from Chainlink (backup for schedulePtbCapture)
+    // Capture PTB on slot change — try Polymarket API (async, non-blocking)
     const clFresh=latestChainlinkPrice&&(Date.now()-latestChainlinkPriceTime)<30000;
     if(clFresh){
       m.priceToBeat=latestChainlinkPrice;
       if(tf===5)savePtb(latestChainlinkPrice);
-      console.log('🎯 PTB on slot change ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (Chainlink)');
+      console.log('🎯 PTB on slot change ['+tf+'m]: $'+latestChainlinkPrice.toFixed(2)+' (Chainlink, may update from API)');
     }else if(!m.priceToBeat){
-      // Last resort: use current price if we have nothing
       m.priceToBeat=price;
       if(tf===5)savePtb(price);
       console.log('⚠️ PTB fallback ['+tf+'m]: $'+price.toFixed(2)+' (no Chainlink)');
+    }
+    // For 5m, also kick off an API fetch to get exact PTB (overwrites Chainlink if found)
+    if(tf===5){
+      fetchPolymarketPtb().then(p=>{
+        if(p&&markets[5]){markets[5].priceToBeat=p;savePtb(p);console.log('🎯 PTB updated from API on slot change: $'+p.toFixed(2))}
+      }).catch(()=>{});
     }
   }
   if(m.currentSlot!==currentSlot){
