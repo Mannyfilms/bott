@@ -5,17 +5,14 @@ const crypto = require('crypto');
 
 const DB_PATH = path.join(__dirname, '..', 'data', 'access.db');
 
-// Ensure data directory exists
 const fs = require('fs');
 const dataDir = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new Database(DB_PATH);
-
-// Enable WAL mode for better concurrent performance
 db.pragma('journal_mode = WAL');
 
-// Create tables
+// ─── Users table ───
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,18 +25,38 @@ db.exec(`
     session_token TEXT
   );
 `);
+try { db.exec('ALTER TABLE users ADD COLUMN session_token TEXT'); } catch(e) {}
 
-// Add session_token column if it doesn't exist (migration)
-try {
-  db.exec('ALTER TABLE users ADD COLUMN session_token TEXT');
-} catch(e) { /* column already exists */ }
+// ─── Prediction log (per-slot records for win rate tracking) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS prediction_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    slot_ts INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    confidence INTEGER DEFAULT 0,
+    resolved INTEGER DEFAULT 0,
+    actual_direction TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(type, slot_ts)
+  );
+`);
 
-/**
- * Generate a short, readable access code
- */
+// ─── Persistent server state (survives restarts) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS server_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// ─────────────────────────────────────────────────────────
+//  USER FUNCTIONS
+// ─────────────────────────────────────────────────────────
+
 function generateCode() {
-  // Format: XXXX-XXXX (8 chars, easy to type)
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // No 0/O/1/I confusion
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 8; i++) {
     if (i === 4) code += '-';
@@ -48,72 +65,143 @@ function generateCode() {
   return code;
 }
 
-/**
- * Get or create an access code for a Discord user
- */
 function getOrCreateUser(discordId, discordUsername) {
-  // Check if user already exists
   const existing = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
-  
   if (existing) {
-    // Update username in case it changed
-    db.prepare('UPDATE users SET discord_username = ? WHERE discord_id = ?')
-      .run(discordUsername, discordId);
+    db.prepare('UPDATE users SET discord_username = ? WHERE discord_id = ?').run(discordUsername, discordId);
     return { code: existing.access_code, isNew: false };
   }
-
-  // Create new user with unique code
   const code = generateCode();
-  db.prepare('INSERT INTO users (discord_id, discord_username, access_code) VALUES (?, ?, ?)')
-    .run(discordId, discordUsername, code);
-  
+  db.prepare('INSERT INTO users (discord_id, discord_username, access_code) VALUES (?, ?, ?)').run(discordId, discordUsername, code);
   return { code, isNew: true };
 }
 
-/**
- * Verify an access code — returns user info or null
- */
 function verifyCode(code) {
   const normalized = code.toUpperCase().trim();
-  const user = db.prepare(
-    'SELECT * FROM users WHERE access_code = ? AND is_active = 1'
-  ).get(normalized);
-
+  const user = db.prepare('SELECT * FROM users WHERE access_code = ? AND is_active = 1').get(normalized);
   if (user) {
-    // Generate new session token — this invalidates any previous session
     const sessionToken = crypto.randomUUID();
-    db.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP, session_token = ? WHERE id = ?')
-      .run(sessionToken, user.id);
+    db.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP, session_token = ? WHERE id = ?').run(sessionToken, user.id);
     user.session_token = sessionToken;
   }
-
   return user || null;
 }
 
-/**
- * Check if a session token is still valid (hasn't been replaced by a newer login)
- */
 function isSessionValid(discordId, sessionToken) {
-  const user = db.prepare(
-    'SELECT session_token FROM users WHERE discord_id = ? AND is_active = 1'
-  ).get(discordId);
+  const user = db.prepare('SELECT session_token FROM users WHERE discord_id = ? AND is_active = 1').get(discordId);
   return user && user.session_token === sessionToken;
 }
 
-/**
- * Revoke a user's access
- */
 function revokeUser(discordId) {
-  const result = db.prepare('UPDATE users SET is_active = 0 WHERE discord_id = ?')
-    .run(discordId);
+  const result = db.prepare('UPDATE users SET is_active = 0 WHERE discord_id = ?').run(discordId);
+  return result.changes > 0;
+}
+
+function getAllUsers() {
+  return db.prepare('SELECT discord_id, discord_username, access_code, created_at, last_login FROM users WHERE is_active = 1').all();
+}
+
+// ─────────────────────────────────────────────────────────
+//  PREDICTION TRACKING
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Record a new prediction for a slot.
+ * type: 'hourly' | 'fivemin'
+ * slotTs: unix seconds timestamp for the slot start
+ * direction: 'UP' | 'DOWN'
+ * confidence: 50-100
+ */
+function recordPrediction(type, slotTs, direction, confidence) {
+  try {
+    db.prepare(`
+      INSERT OR IGNORE INTO prediction_log (type, slot_ts, direction, confidence)
+      VALUES (?, ?, ?, ?)
+    `).run(type, slotTs, direction, confidence || 0);
+  } catch(e) { /* ignore */ }
+}
+
+/**
+ * Mark a prediction as resolved with the actual outcome.
+ * Returns true if a record was updated.
+ */
+function resolvePrediction(type, slotTs, actualDirection) {
+  const result = db.prepare(`
+    UPDATE prediction_log
+    SET resolved = 1, actual_direction = ?
+    WHERE type = ? AND slot_ts = ? AND resolved = 0
+  `).run(actualDirection, type, slotTs);
   return result.changes > 0;
 }
 
 /**
- * Get all active users (admin)
+ * Get win rate stats for a type.
  */
-function getAllUsers() {
-  return db.prepare('SELECT discord_id, discord_username, access_code, created_at, last_login FROM users WHERE is_active = 1').all();
+function getWinRate(type) {
+  const rows = db.prepare(`
+    SELECT direction, actual_direction
+    FROM prediction_log
+    WHERE type = ? AND resolved = 1
+    ORDER BY slot_ts DESC
+  `).all(type);
+
+  let wins = 0, losses = 0;
+  rows.forEach(r => {
+    if (r.direction === r.actual_direction) wins++;
+    else losses++;
+  });
+
+  const total = wins + losses;
+  const rate = total > 0 ? (wins / total * 100).toFixed(1) : null;
+
+  // Current streak
+  let streak = 0, streakWin = null;
+  for (const r of rows) {
+    const correct = r.direction === r.actual_direction;
+    if (streakWin === null) { streakWin = correct; streak = 1; }
+    else if (correct === streakWin) streak++;
+    else break;
+  }
+
+  // Last 10 results for display
+  const last10 = rows.slice(0, 10).map(r => ({
+    direction: r.direction,
+    actual: r.actual_direction,
+    correct: r.direction === r.actual_direction
+  }));
+
+  return { wins, losses, total, rate, streak, streakWin, last10 };
+}
+
+/**
+ * Get unresolved predictions older than minAgeSecs seconds.
+ */
+function getUnresolvedPredictions(type, minAgeSecs = 370) {
+  const cutoff = Math.floor(Date.now() / 1000) - minAgeSecs;
+  return db.prepare(`
+    SELECT id, slot_ts, direction, confidence
+    FROM prediction_log
+    WHERE type = ? AND resolved = 0 AND slot_ts < ?
+    ORDER BY slot_ts ASC
+    LIMIT 20
+  `).all(type, cutoff);
+}
+
+// ─────────────────────────────────────────────────────────
+//  SERVER STATE PERSISTENCE
+// ─────────────────────────────────────────────────────────
+
+function saveState(key, value) {
+  db.prepare(`
+    INSERT OR REPLACE INTO server_state (key, value, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+  `).run(key, JSON.stringify(value));
+}
+
+function loadState(key) {
+  const row = db.prepare('SELECT value FROM server_state WHERE key = ?').get(key);
+  if (!row) return null;
+  try { return JSON.parse(row.value); } catch(e) { return null; }
 }
 
 module.exports = {
@@ -121,5 +209,11 @@ module.exports = {
   verifyCode,
   isSessionValid,
   revokeUser,
-  getAllUsers
+  getAllUsers,
+  recordPrediction,
+  resolvePrediction,
+  getWinRate,
+  getUnresolvedPredictions,
+  saveState,
+  loadState
 };

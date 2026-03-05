@@ -298,6 +298,45 @@
     <div id="signalPerformance"></div>
 </div>
 
+<!-- MARKET INTELLIGENCE -->
+<div class="card" id="intelCard">
+    <div class="ct">Market Intelligence</div>
+    <div class="g2">
+        <div style="background:var(--sf2);border-radius:var(--rs);padding:14px">
+            <div style="font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:8px">Polymarket Crowd Odds</div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+                <span style="font-size:.78em;color:var(--up)">UP <span id="intelUpPct" style="font-family:'JetBrains Mono',monospace;font-weight:700">--</span></span>
+                <span style="font-size:.78em;color:var(--dn)">DOWN <span id="intelDownPct" style="font-family:'JetBrains Mono',monospace;font-weight:700">--</span></span>
+            </div>
+            <div style="position:relative;height:8px;background:var(--dns);border-radius:4px;overflow:hidden">
+                <div id="intelOddsBar" style="height:100%;background:var(--up);border-radius:4px;width:50%;transition:width .6s ease"></div>
+            </div>
+            <div id="intelCrowdSignal" style="margin-top:8px;font-size:.78em;font-weight:600;color:var(--tx2)">Crowd: --</div>
+        </div>
+        <div style="background:var(--sf2);border-radius:var(--rs);padding:14px">
+            <div style="font-size:.64em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:10px">Live Signals</div>
+            <div style="display:flex;flex-direction:column;gap:7px">
+                <div style="display:flex;justify-content:space-between;font-size:.76em">
+                    <span style="color:var(--tx3)">Regime (ADX)</span>
+                    <span id="intelRegime" style="font-weight:600;color:var(--tx2)">--</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:.76em">
+                    <span style="color:var(--tx3)">Volume</span>
+                    <span id="intelVolume" style="font-weight:600;color:var(--tx2)">--</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:.76em">
+                    <span style="color:var(--tx3)">EMA 9/21</span>
+                    <span id="intelEma" style="font-weight:600;color:var(--tx2)">--</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:.76em">
+                    <span style="color:var(--tx3)">CLOB Orderbook</span>
+                    <span id="intelOrderbook" style="font-weight:600;color:var(--tx2)">--</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- HOW IT WORKS -->
 <div class="card">
     <div class="ct">How Our Predictions Work</div>
@@ -386,6 +425,8 @@ let signalWeights={sma:2,rsi:2.5,bollinger:2,macd:2,volume:1.5,momentum:1.5,patt
 let signalPerformance={};
 let stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};
 let externalData={fearGreed:50,sentiment:'NEUTRAL',btcDominance:50,fundingRate:0,exchangeFlow:'NEUTRAL',whaleActivity:'LOW'};
+let recentResults=[];
+function getRecentAccuracy(){if(recentResults.length<3)return null;const last=recentResults.slice(-10);return last.filter(r=>r.correct).length/last.length;}
 
 // ═══ PREDICTION LOCK SYSTEM ═══
 let predictionLock={
@@ -718,8 +759,18 @@ async function fetchPolymarketOdds(){
       polymarketOdds.downPrice=data.downPrice;
       polymarketOdds.lastFetch=Date.now();
     }
-    // PTB is set by schedulePtbCapture and slot change handler from Chainlink
-    // Do NOT override from Polymarket API text parsing — it's unreliable
+    // PTB FIX: data.ptb now uses mkt.startPrice — the authoritative Polymarket value
+    if(data.ptb&&data.ptb>50000&&data.ptb<200000){
+      if(!markets[5].priceToBeat){
+        markets[5].priceToBeat=data.ptb;
+        savePtb(data.ptb);
+        console.log('📌 PTB from Polymarket API (authoritative): $'+data.ptb.toFixed(2));
+      }else if(Math.abs(markets[5].priceToBeat-data.ptb)>30){
+        console.log('⚠️ PTB mismatch: local=$'+markets[5].priceToBeat.toFixed(2)+' → syncing to API=$'+data.ptb.toFixed(2));
+        markets[5].priceToBeat=data.ptb;
+        savePtb(data.ptb);
+      }
+    }
   }catch(e){}
 }
 // Fetch every 10 seconds — this is our most valuable signal
@@ -1347,15 +1398,27 @@ const abovePct=posData.abovePct;
 const avgDiff=posData.avgDiff;
 const trend=posData.trend;
 
-// Simple prediction: if above PTB for most of the slot → YES
-const prediction=abovePct>0.5;
-const dominance=Math.abs(abovePct-0.5)*2;
+// Base prediction: above PTB for most of slot → YES
+// Blend with Polymarket odds (crowd wisdom, 25% weight when fresh)
+let predScore=abovePct;
+if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
+  predScore=predScore*0.75+polymarketOdds.upPrice*0.25;
+}
+const prediction=predScore>0.5;
+const dominance=Math.abs(predScore-0.5)*2;
 
 sigs.push({name:'Price vs PTB',signal:(aboveNow?'+$':'-$')+gap.toFixed(2),strength:Math.min(gap/10,5)});
 sigs.push({name:'Time Above PTB',signal:Math.round(abovePct*100)+'% of slot',strength:dominance*5});
 sigs.push({name:'Avg Distance',signal:(avgDiff>0?'+':'')+avgDiff.toFixed(2),strength:Math.min(Math.abs(avgDiff)/10,3)});
 sigs.push({name:'Trend',signal:trend>0?'Moving UP':'Moving DOWN',strength:Math.min(Math.abs(trend),3)});
 sigs.push({name:'Current',signal:aboveNow?'ABOVE PTB':'BELOW PTB',strength:gap>20?3:gap>5?2:1});
+
+// ── Extended signals ──
+if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){const up=polymarketOdds.upPrice;const lean=up>0.65?'STRONG BULLISH':up>0.55?'BULLISH':up<0.35?'STRONG BEARISH':up<0.45?'BEARISH':'NEUTRAL';sigs.push({name:'Polymarket Odds',signal:lean+' (UP '+Math.round(up*100)+'%)',strength:Math.abs(up-0.5)*10});}
+const ecApp=emaCrossover(jp);if(ecApp){sigs.push({name:'EMA 9/21',signal:(ecApp.bullish?'BULLISH':'BEARISH')+(ecApp.crossUp?' [CROSS UP]':ecApp.crossDown?' [CROSS DN]':''),strength:ecApp.crossUp||ecApp.crossDown?3.5:1.5});}
+if(orderbookData.lastUpdate&&(Date.now()-orderbookData.lastUpdate)<30000){const imb=orderbookData.imbalance;sigs.push({name:'CLOB Orderbook',signal:(imb>0.1?'BULLISH BIDS':imb<-0.1?'BEARISH BIDS':'NEUTRAL')+' ('+Math.round(imb*100)+'% imb)',strength:Math.min(Math.abs(imb)*5,3)});}
+{const vols2=prices.map(p=>p.volume);if(vols2.length>=20){const rv2=vols2.slice(-10).reduce((a,b)=>a+b,0)/10,ov2=vols2.slice(-20,-10).reduce((a,b)=>a+b,0)/10;if(ov2>0){const vc2=(rv2-ov2)/ov2;sigs.push({name:'Volume Trend',signal:(vc2>0.15?'BULLISH VOLUME':vc2<-0.15?'BEARISH VOLUME':'NEUTRAL VOLUME')+' ('+(vc2>0?'+':'')+Math.round(vc2*100)+'%)',strength:Math.min(Math.abs(vc2)*3,2)});}}}
+const adxApp=adx(jp);if(adxApp){sigs.push({name:'ADX Regime',signal:adxApp.trend+' (ADX '+adxApp.adx.toFixed(0)+')',strength:adxApp.adx>25?2.5:1});}
 
 // Confidence: 59-98% range
 // Small gap + mixed position = low confidence, big gap + strong dominance = high
@@ -1451,6 +1514,8 @@ if(!predictionLock.locked){
     predictionLock.lockTime=Date.now();
     predictionLock.lockPtb=ptb;
     savePredictionLock();
+    // Report to server for win rate tracking (persists across restarts)
+    {const _s=Math.floor(Date.now()/300000)*300;fetch('/api/pred-lock-5m',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slotTs:_s,direction:finalPrediction?'UP':'DOWN',confidence:Math.round(parseFloat(clampedConf))})}).catch(()=>{});}
     displayWillBeat=finalPrediction;
     lockStatus=' 🔒 LOCKED';
     console.log('🔒 LOCKED at '+timeInSlot.toFixed(0)+'s (above '+Math.round(getPositionBias().abovePct*100)+'%, gap $'+priceDiff.toFixed(0)+'): '+(finalPrediction?'YES ↑':'NO ↓'));
@@ -1489,6 +1554,37 @@ if(pred.pattern){document.getElementById('patternSection').style.display='block'
 displaySignals(pred.signals);updateCountdown()}}catch(e){console.error('❌ updateDisplay error:',e)}}
 function displaySignals(sigs){const el=document.getElementById('signalList');if(!sigs||!sigs.length){el.innerHTML='<span style="color:var(--tx3)">Waiting&hellip;</span>';return}el.innerHTML=sigs.map(s=>{let c='';if(s.signal.includes('BULLISH'))c='sig-u';if(s.signal.includes('BEARISH'))c='sig-d';return'<div class="sig '+c+'"><span><strong>'+s.name+'</strong></span><span style="color:var(--tx2)">'+s.signal+(s.probability?' ('+s.probability+')':'')+'</span><span style="color:var(--tx3)">'+s.strength.toFixed(2)+'</span></div>'}).join('')}
 function updateCountdown(){const end=getSlotEnd(selectedTimeframe);const tl=end-new Date();if(tl<=0){document.getElementById('status').textContent='Checking prediction...';return}const labels={5:'5m',15:'15m',60:'1h'};document.getElementById('status').textContent=labels[selectedTimeframe]+' Next: '+fmt(end)+' ('+Math.floor(tl/6e4)+'m '+Math.floor(tl%6e4/1e3)+'s)'}
+
+// ═══ MARKET INTELLIGENCE PANEL ═══
+function updateIntelPanel(){
+  try{
+    // Polymarket odds bar + crowd signal
+    if(polymarketOdds.upPrice&&(Date.now()-polymarketOdds.lastFetch)<60000){
+      const up=polymarketOdds.upPrice,upPct=Math.round(up*100);
+      const el1=document.getElementById('intelUpPct'),el2=document.getElementById('intelDownPct'),bar=document.getElementById('intelOddsBar'),cs=document.getElementById('intelCrowdSignal');
+      if(el1)el1.textContent=upPct+'%';
+      if(el2)el2.textContent=(100-upPct)+'%';
+      if(bar){bar.style.width=upPct+'%';bar.style.background=up>0.55?'var(--up)':up<0.45?'var(--dn)':'#eab308';}
+      if(cs){cs.textContent='Crowd: '+(up>0.65?'Strong UP signal':up>0.55?'Leaning UP':up<0.35?'Strong DOWN signal':up<0.45?'Leaning DOWN':'Near 50/50');cs.style.color=up>0.55?'var(--up)':up<0.45?'var(--dn)':'#eab308';}
+    }
+    const jp=priceHistory.map(p=>p.price);
+    if(jp.length>=28){
+      const adxR=adx(jp),regEl=document.getElementById('intelRegime');
+      if(adxR&&regEl){regEl.textContent=adxR.trend+' ('+adxR.adx.toFixed(0)+')';regEl.style.color=adxR.trend.includes('UP')?'var(--up)':adxR.trend.includes('DOWN')?'var(--dn)':'var(--tx2)';}
+      const ec=emaCrossover(jp),emaEl=document.getElementById('intelEma');
+      if(ec&&emaEl){emaEl.textContent=ec.bullish?'Bullish':'Bearish';emaEl.style.color=ec.bullish?'var(--up)':'var(--dn)';}
+    }
+    if(priceHistory.length>=20){
+      const vols=priceHistory.map(p=>p.volume),rv=vols.slice(-10).reduce((a,b)=>a+b,0)/10,ov=vols.slice(-20,-10).reduce((a,b)=>a+b,0)/10;
+      const vc=ov?((rv-ov)/ov*100).toFixed(0):0,volEl=document.getElementById('intelVolume');
+      if(volEl){volEl.textContent=(vc>0?'+':'')+vc+'%';volEl.style.color=vc>5?'var(--up)':vc<-5?'var(--dn)':'var(--tx2)';}
+    }
+    if(orderbookData.lastUpdate&&(Date.now()-orderbookData.lastUpdate)<30000){
+      const imb=orderbookData.imbalance,obEl=document.getElementById('intelOrderbook');
+      if(obEl){obEl.textContent=(imb>0.05?'Bid heavy ↑':imb<-0.05?'Ask heavy ↓':'Balanced')+' ('+Math.round(imb*100)+'% imb)';obEl.style.color=imb>0.1?'var(--up)':imb<-0.1?'var(--dn)':'var(--tx2)';}
+    }
+  }catch(e){}
+}
 
 // ═══ CHECK ═══
 // ═══ ADAPTIVE LEARNING ENGINE ═══
@@ -1899,6 +1995,7 @@ const _origUpdateDisplay=updateDisplay;
 updateDisplay=function(price,volume){
   _origUpdateDisplay(price,volume);
   try{updateTradeCard();}catch(e){}
+  try{updateIntelPanel();}catch(e){}
 };
 
 let _heartbeatCount=0;
