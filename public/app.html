@@ -123,6 +123,17 @@
     .hitem{padding:11px;border-bottom:1px solid var(--bd);font-size:.8em}
     .hitem:last-child{border-bottom:none}
     .correct{color:var(--up);font-weight:600}.incorrect{color:var(--dn);font-weight:600}
+
+    /* ═══ TRADING SIGNAL ═══ */
+    @keyframes tradePulse{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+    @keyframes urgentPulse{0%,100%{opacity:1}50%{opacity:.55}}
+    .tr-row{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:.76em;color:var(--tx2);border-bottom:1px solid var(--bd)}
+    .tr-row:last-child{border-bottom:none}
+    .tr-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:5px}
+    .tr-dot.green{background:var(--up)}.tr-dot.red{background:var(--dn)}.tr-dot.yellow{background:var(--btc)}.tr-dot.blue{background:var(--bl)}
+    .exit-tag{display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:20px;font-size:.7em;font-weight:600;background:var(--sf2);border:1px solid var(--bd);color:var(--tx3);transition:all .3s}
+    .exit-tag.active-exit{background:var(--dns);border-color:rgba(255,71,87,.2);color:var(--dn)}
+    .exit-tag.warn-exit{background:var(--btcs);border-color:rgba(247,147,26,.2);color:var(--btc)}
 </style>
 ```
 
@@ -134,10 +145,6 @@
         <div class="nav-text"><h1>Polymarket BTC Predictor</h1><span>5-Minute Forecasts &middot; Chainlink BTC/USD (Polymarket Source)</span></div>
         <div class="nav-right">
             <span class="nav-user" id="userGreeting"></span>
-            <button class="btn btn-go" id="startBtn" onclick="startPredictions()">Start</button>
-            <button class="btn btn-g" id="stopBtn" onclick="stopPredictions()" disabled>Stop</button>
-            <button class="btn btn-g" onclick="saveProgress()">Save</button>
-            <button class="btn btn-r" onclick="resetStats()">Reset</button>
             <button class="btn btn-g" onclick="logout()">Log out</button>
         </div>
     </nav>
@@ -163,16 +170,110 @@
     <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
 </div>
 
-<div class="card">
-    <div class="ct">Prediction &amp; Confidence</div>
-    <div class="g2">
-        <div class="pred pred-nu" id="predictionDisplay"><h3>Ensemble Prediction</h3><div class="val" id="predictionValue">--</div><div class="conf" id="predictionConfidence">--</div><div style="margin-top:6px;font-size:.75em;color:var(--tx3)" id="predictionDetails">--</div></div>
-        <div class="pred pred-info"><h3>Next Check</h3><div style="font-family:'JetBrains Mono',monospace;font-size:1.25em;font-weight:700;color:var(--btc);margin:8px 0" id="nextCheckTime">--</div><div style="font-size:.73em;color:var(--tx2);line-height:1.8">3 ML Models &middot; 15+ Indicators<br>Sentiment &middot; Pattern Recognition</div></div>
+<div class="card" id="tradeCard" style="position:relative;overflow:hidden">
+    <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--up),#00b86e,var(--up));background-size:200% 100%;animation:tradePulse 3s linear infinite" id="tradeTopBar"></div>
+    <div class="ct">Trading Signal</div>
+
+    <!-- Urgent exit banner -->
+    <div id="tradeUrgent" style="display:none;background:linear-gradient(135deg,rgba(255,71,87,.12),rgba(255,71,87,.06));border:1px solid rgba(255,71,87,.2);border-radius:var(--rs);padding:10px 14px;text-align:center;font-size:.8em;font-weight:600;color:var(--dn);animation:urgentPulse 1.2s ease-in-out infinite;margin-bottom:14px">⚠️ EXIT CONDITIONS MET — Consider closing your position now</div>
+
+    <!-- Hero row: action + signal info + timer -->
+    <div style="display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center;margin-bottom:18px">
+        <div id="tradeAction" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:86px;height:86px;border-radius:14px;background:var(--btcs);border:1px solid rgba(247,147,26,.15);transition:all .3s;flex-shrink:0">
+            <div id="tradeIcon" style="font-size:2em;line-height:1;margin-bottom:3px">⏳</div>
+            <div id="tradeLabel" style="font-size:.6em;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--btc)">WAIT</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+            <div id="tradeTitle" style="font-size:1.15em;font-weight:700;letter-spacing:-.01em;line-height:1.2">Analyzing market...</div>
+            <div id="tradeSub" style="font-size:.8em;color:var(--tx2);line-height:1.5">Entry signal fires once prediction locks (~90s into slot)</div>
+            <!-- Direction + Confidence inline -->
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:2px">
+                <div style="display:flex;align-items:center;gap:6px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px">
+                    <span style="font-size:.65em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">Direction</span>
+                    <span id="tsEntryDir" style="font-family:'JetBrains Mono',monospace;font-size:.82em;font-weight:700;color:var(--tx2)">--</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px">
+                    <span style="font-size:.65em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">Confidence</span>
+                    <span id="confPercent" style="font-family:'JetBrains Mono',monospace;font-size:.82em;font-weight:700;color:var(--tx2)">--</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px">
+                    <span style="font-size:.65em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">Quality</span>
+                    <span id="tsQuality" style="font-family:'JetBrains Mono',monospace;font-size:.82em;font-weight:700;color:var(--tx2)">--</span>
+                </div>
+            </div>
+        </div>
+        <!-- Slot timer ring -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0">
+            <div style="width:54px;height:54px;position:relative">
+                <svg viewBox="0 0 54 54" style="width:54px;height:54px;transform:rotate(-90deg)">
+                    <circle fill="none" stroke="var(--sf3)" stroke-width="4" cx="27" cy="27" r="22"/>
+                    <circle fill="none" id="timerRing" stroke="var(--up)" stroke-width="4" stroke-linecap="round" cx="27" cy="27" r="22" stroke-dasharray="138.2" stroke-dashoffset="0" style="transition:stroke-dashoffset .8s ease,stroke .3s"/>
+                </svg>
+                <div id="timerVal" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:'JetBrains Mono',monospace;font-size:.68em;font-weight:700">--</div>
+            </div>
+            <div style="font-size:.6em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">slot left</div>
+        </div>
     </div>
-    <div><div class="cflbl"><span id="confPercent">0%</span></div><div class="cftrack"><div class="cffill" id="confidenceMeter" style="width:0%"></div></div></div>
-    
+
+    <!-- Confidence bar (still needed by JS) -->
+    <div style="display:none"><div class="cftrack"><div class="cffill" id="confidenceMeter" style="width:0%"></div></div></div>
+
+    <!-- Key metrics row -->
+    <div class="g3" style="margin-bottom:14px">
+        <div class="tm-box" style="background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:10px 12px;text-align:center">
+            <div style="font-size:.61em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:4px">Entry Price</div>
+            <div id="tsEntryPrice" style="font-family:'JetBrains Mono',monospace;font-size:.9em;font-weight:700;color:var(--btc)">--</div>
+        </div>
+        <div class="tm-box" style="background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:10px 12px;text-align:center">
+            <div style="font-size:.61em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:4px">PTB Target</div>
+            <div id="tsTarget" style="font-family:'JetBrains Mono',monospace;font-size:.9em;font-weight:700;color:var(--tx2)">--</div>
+        </div>
+        <div class="tm-box" style="background:var(--sf2);border:1px solid var(--bd);border-radius:var(--rs);padding:10px 12px;text-align:center">
+            <div style="font-size:.61em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:4px">P&amp;L vs PTB</div>
+            <div id="tsPnl" style="font-family:'JetBrains Mono',monospace;font-size:.9em;font-weight:700">--</div>
+        </div>
+    </div>
+
+    <!-- ML Models -->
+    <div class="g3" style="margin-bottom:14px">
+        <div class="mc"><h4>LSTM</h4><div class="mp" id="model1Pred">--</div><div class="mcc" id="model1Conf">--%</div></div>
+        <div class="mc"><h4>Technical</h4><div class="mp" id="model2Pred">--</div><div class="mcc" id="model2Conf">--%</div></div>
+        <div class="mc"><h4>Hybrid</h4><div class="mp" id="model3Pred">--</div><div class="mcc" id="model3Conf">--%</div></div>
+    </div>
+
+    <!-- Pattern detection (kept for JS) -->
     <div class="pat" id="patternSection"><span id="patternName"></span></div>
+
+    <!-- Signal reasoning -->
+    <div style="background:var(--sf2);border-radius:var(--rs);padding:12px 14px;margin-bottom:10px">
+        <div style="font-size:.65em;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--tx3);margin-bottom:8px">Signal Reasoning</div>
+        <div id="tradeReasonList"><div class="tr-row"><div class="tr-dot yellow"></div><span>Collecting data — entry signal will appear once prediction locks in</span></div></div>
+    </div>
+
+    <!-- Exit monitors -->
+    <div style="background:var(--sf2);border-radius:var(--rs);padding:12px 14px;margin-bottom:14px">
+        <div style="font-size:.65em;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--tx3);margin-bottom:8px">Exit Monitors</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <div class="exit-tag" id="exitPtbFlip">↕ PTB Flip</div>
+            <div class="exit-tag" id="exitTimeFinal">⏱ Final 60s</div>
+            <div class="exit-tag" id="exitConfDrop">📉 Conf Drop</div>
+            <div class="exit-tag" id="exitBiasFade">📊 Bias Fade</div>
+            <div class="exit-tag" id="exitVelocity">🚀 Velocity</div>
+        </div>
+    </div>
+
+    <!-- Signal breakdown (kept for JS) -->
     <div class="sigw"><h3>Signal Breakdown</h3><div id="signalList" style="color:var(--tx3);font-size:.8em">Waiting&hellip;</div></div>
+
+    <!-- Hidden prediction elements JS still writes to -->
+    <div style="display:none">
+        <div id="predictionDisplay"></div>
+        <div id="predictionValue"></div>
+        <div id="predictionConfidence"></div>
+        <div id="predictionDetails"></div>
+        <div id="nextCheckTime"></div>
+        <div id="tsProgress"></div>
+    </div>
 </div>
 
 <div class="card">
@@ -1265,7 +1366,7 @@ const confidence=Math.max(59,Math.min(98,59+gapConf+timeConf+trendConf)).toFixed
 
 let feat=[],mp={lstm:0.5,technical:0.5,hybrid:0.5};
 try{feat=extractFeat(prices,volumes)}catch(e){}
-try{const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];getMP(feat,sf).then(r=>{mp=r}).catch(()=>{})}catch(e){}
+try{const sf=trainingData.length>=10?trainingData.slice(-10).map(d=>d.features):[];getMP(feat,sf).then(r=>{mp=r;['model1','model2','model3'].forEach((id,i)=>{const k=['lstm','technical','hybrid'][i],v=r[k];const pe=document.getElementById(id+'Pred'),ce=document.getElementById(id+'Conf');if(pe){pe.textContent=v>.5?'UP ↑':'DOWN ↓';pe.style.color=v>.5?'var(--up)':'var(--dn)';}if(ce)ce.textContent=(v*100).toFixed(1)+'%';});}).catch(()=>{})}catch(e){}
 const cp2=detectPat(jp);
 
 console.log('📊 Above: '+Math.round(abovePct*100)+'% | Gap: $'+gap.toFixed(0)+' | Trend: '+(trend>0?'+':'')+trend.toFixed(0)+' | → '+(prediction?'YES':'NO'));
@@ -1383,7 +1484,7 @@ try{localStorage.setItem('currentPred5m',JSON.stringify({pred:m.currentPredictio
 const pb=document.getElementById('predictionDisplay');pb.className=displayWillBeat?'pred pred-up':'pred pred-dn';
 document.getElementById('predictionValue').innerHTML='<div style="font-size:1.1em">'+(displayWillBeat?'&#8593; YES':'&#8595; NO')+lockStatus+'</div><div style="font-size:.52em;margin-top:4px;color:var(--tx2)">'+(displayWillBeat?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+'</div>';
 document.getElementById('predictionConfidence').textContent='Confidence: '+displayConf+'%';document.getElementById('predictionDetails').textContent='Forecast for '+fmt(slotEnd);document.getElementById('nextCheckTime').textContent=fmt(slotEnd);document.getElementById('confidenceMeter').style.width=displayConf+'%';document.getElementById('confPercent').textContent=displayConf+'%';const cf=parseFloat(displayConf);document.getElementById('confidenceMeter').style.background=cf>=70?'linear-gradient(90deg,var(--up),#00b86e)':cf>=50?'linear-gradient(90deg,#eab308,#d97706)':'linear-gradient(90deg,var(--dn),#b91c1c)';
-    
+['model1','model2','model3'].forEach((id,i)=>{const k=['lstm','technical','hybrid'][i],v=pred.modelPredictions[k];document.getElementById(id+'Pred').textContent=v>.5?'UP ↑':'DOWN ↓';document.getElementById(id+'Pred').style.color=v>.5?'var(--up)':'var(--dn)';document.getElementById(id+'Conf').textContent=(v*100).toFixed(1)+'%'});
 if(pred.pattern){document.getElementById('patternSection').style.display='block';document.getElementById('patternName').textContent=pred.pattern.pattern+' — '+pred.pattern.signal}else document.getElementById('patternSection').style.display='none';
 displaySignals(pred.signals);updateCountdown()}}catch(e){console.error('❌ updateDisplay error:',e)}}
 function displaySignals(sigs){const el=document.getElementById('signalList');if(!sigs||!sigs.length){el.innerHTML='<span style="color:var(--tx3)">Waiting&hellip;</span>';return}el.innerHTML=sigs.map(s=>{let c='';if(s.signal.includes('BULLISH'))c='sig-u';if(s.signal.includes('BEARISH'))c='sig-d';return'<div class="sig '+c+'"><span><strong>'+s.name+'</strong></span><span style="color:var(--tx2)">'+s.signal+(s.probability?' ('+s.probability+')':'')+'</span><span style="color:var(--tx3)">'+s.strength.toFixed(2)+'</span></div>'}).join('')}
@@ -1568,7 +1669,7 @@ async function refreshCandles(){
   }catch(e){}
 }
 
-async function startPredictions(){if(isRunning)return;isRunning=true;document.getElementById('startBtn').disabled=true;document.getElementById('stopBtn').disabled=false;
+async function startPredictions(){if(isRunning)return;isRunning=true;
 document.getElementById('status').textContent='Loading historical data...';
 // Hard 10s deadline — if data loading hangs, start anyway in live mode
 await Promise.race([
@@ -1609,7 +1710,7 @@ if(!ptbAlreadySet){
 }
 document.getElementById('status').textContent='Running — 200+ data points loaded';
 updatePrice();updateInterval=setInterval(updatePrice,5e3);checkInterval=setInterval(updateCountdown,1e3)}
-function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('startBtn').disabled=false;document.getElementById('stopBtn').disabled=true;document.getElementById('status').textContent='Stopped'}
+function stopPredictions(){if(!isRunning)return;isRunning=false;clearInterval(updateInterval);clearInterval(checkInterval);document.getElementById('status').textContent='Stopped'}
 function resetStats(){if(!confirm('Reset all data?'))return;stats={total:0,correct:0,currentStreak:0,skipped:0,highConfPredictions:0,highConfCorrect:0};predictionHistory=[];priceHistory=[];trainingData=[];signalPerformance={};signalMultipliers={};[5,15,60].forEach(tf=>{markets[tf]={priceToBeat:null,currentSlot:null,currentPrediction:null}});if(lstmModel)lstmModel.dispose();if(technicalModel)technicalModel.dispose();if(hybridModel)hybridModel.dispose();lstmModel=null;technicalModel=null;hybridModel=null;localStorage.removeItem('btcPred');updateStats();updateHistoryDisplay();updateSignalPerformance();document.getElementById('mlStatus').innerHTML='Ensemble: Initializing &middot; LSTM: Not trained &middot; Active';document.getElementById('status').textContent='Reset complete';document.getElementById('priceToBeat').textContent='--';document.getElementById('vsComparison').textContent='--'}
 // Script is inline at bottom of body — DOM is already ready, call directly
 loadProgress();
@@ -1638,6 +1739,168 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 // ═══ HEARTBEAT — independent check that page is alive ═══
+// ═══════════════════════════════════════════════════════
+// TRADING SIGNAL ENGINE
+// ═══════════════════════════════════════════════════════
+let tradeState={phase:'WAIT',entryDirection:null,entryPrice:null,entryTime:null,entryConf:null};
+
+const _origResetPredictionLock=resetPredictionLock;
+resetPredictionLock=function(){
+  _origResetPredictionLock();
+  tradeState={phase:'WAIT',entryDirection:null,entryPrice:null,entryTime:null,entryConf:null};
+  _tradeRenderWait(0,0);
+};
+
+function updateTradeCard(){
+  try{
+    const m=getActiveMarket(),cp=m.currentPrediction,ptb=m.priceToBeat,price=latestBtcPrice;
+    if(!price)return;
+    const slotEnd=getSlotEnd(selectedTimeframe),now=Date.now();
+    const totalSlotMs=selectedTimeframe*60*1000,msLeft=Math.max(0,slotEnd-now);
+    const msElapsed=totalSlotMs-msLeft,secsLeft=Math.floor(msLeft/1000);
+    const progress=Math.min(1,msElapsed/totalSlotMs);
+
+    // Timer ring
+    const ring=document.getElementById('timerRing'),tv=document.getElementById('timerVal');
+    if(ring&&tv){ring.style.strokeDashoffset=138.2*(1-progress);ring.style.stroke=secsLeft<60?'var(--dn)':secsLeft<120?'var(--btc)':'var(--up)';tv.textContent=secsLeft<60?secsLeft+'s':Math.ceil(secsLeft/60)+'m';}
+
+    // No lock yet
+    if(!predictionLock.locked||predictionLock.direction===null||!cp||!ptb){_tradeRenderWait(secsLeft,msElapsed);return;}
+
+    const locked=predictionLock.direction;
+    const posData=getPositionBias();
+    const correctBias=locked?posData.abovePct:(1-posData.abovePct);
+    const conf=parseFloat(cp.confidence)||60;
+    const gap=Math.abs(price-ptb);
+    const priceAbove=price>ptb;
+    const onWrongSide=(locked&&!priceAbove)||(!locked&&priceAbove);
+
+    // Update Direction + Confidence badges
+    const edEl=document.getElementById('tsEntryDir');
+    if(edEl){edEl.textContent=locked?'BUY YES ↑':'BUY NO ↓';edEl.style.color=locked?'var(--up)':'var(--dn)';}
+    const cpEl=document.getElementById('confPercent');
+    if(cpEl){cpEl.textContent=conf+'%';cpEl.style.color=conf>=70?'var(--up)':conf>=55?'#eab308':'var(--dn)';}
+
+    // P&L
+    const pnlEl=document.getElementById('tsPnl');
+    if(pnlEl){const d=price-ptb;pnlEl.style.color=(locked&&d>0)||(!locked&&d<0)?'var(--up)':'var(--dn)';pnlEl.textContent=(d>0?'+':'')+'$'+d.toFixed(2);}
+    const tEl=document.getElementById('tsTarget');if(tEl)tEl.textContent='$'+ptb.toFixed(2);
+
+    // Fire entry on first lock
+    if(tradeState.phase==='WAIT'&&predictionLock.locked&&predictionLock.direction!==null){
+      tradeState.phase='ENTER';tradeState.entryDirection=locked?'YES':'NO';
+      tradeState.entryPrice=price;tradeState.entryTime=now;tradeState.entryConf=conf;
+    }
+    const epEl=document.getElementById('tsEntryPrice');
+    if(epEl&&tradeState.entryPrice)epEl.textContent='$'+tradeState.entryPrice.toFixed(2);
+
+    // ── EXIT MONITORS ──
+    const exitReasons=[];let urgentExit=false;
+    const ptbFlip=onWrongSide&&gap>15;
+    if(ptbFlip){exitReasons.push({dot:'red',text:'Price $'+gap.toFixed(0)+' on wrong side of PTB'+(gap>40?' — strong reversal':'')});if(gap>40)urgentExit=true;}
+    _setExitTag('exitPtbFlip',ptbFlip,gap>40);
+    const finalSecs=secsLeft<=60&&secsLeft>0;
+    if(finalSecs){exitReasons.push({dot:'yellow',text:'Final '+secsLeft+'s — consider locking in position'});if(onWrongSide&&secsLeft<20)urgentExit=true;}
+    _setExitTag('exitTimeFinal',finalSecs,secsLeft<20);
+    const confDrop=tradeState.entryConf&&(tradeState.entryConf-conf)>12;
+    if(confDrop)exitReasons.push({dot:'red',text:'Confidence dropped '+tradeState.entryConf+'% → '+conf+'%'});
+    _setExitTag('exitConfDrop',confDrop,confDrop&&(tradeState.entryConf-conf)>20);
+    const biasFade=correctBias<0.42&&secsLeft<180;
+    if(biasFade)exitReasons.push({dot:'yellow',text:'Correct-side bias only '+Math.round(correctBias*100)+'% — fading'});
+    _setExitTag('exitBiasFade',biasFade,biasFade&&correctBias<0.32);
+    const jp=priceHistory.map(p=>p.price);let velSignal=false;
+    if(jp.length>=8){const r3=jp.slice(-3).reduce((s,p)=>s+p,0)/3,p3=jp.slice(-6,-3).reduce((s,p)=>s+p,0)/3,vel=r3-p3;velSignal=locked?(vel<-20):(vel>20);if(velSignal)exitReasons.push({dot:'blue',text:'Momentum reversing '+(vel>0?'↑':'↓')+'$'+Math.abs(vel).toFixed(0)+'/tick'});}
+    _setExitTag('exitVelocity',velSignal,false);
+
+    // Phase transitions
+    const hasExit=ptbFlip||confDrop||biasFade||finalSecs||velSignal;
+    if(tradeState.phase==='ENTER')tradeState.phase='HOLD';
+    if(hasExit&&tradeState.phase==='HOLD')tradeState.phase='EXIT';
+    if(!hasExit&&tradeState.phase==='EXIT')tradeState.phase='HOLD';
+
+    // Signal quality
+    const q=Math.round((conf/100)*40+correctBias*30+(!onWrongSide?20:0)+(gap>30?10:gap>10?5:0));
+    const qEl=document.getElementById('tsQuality');
+    if(qEl){qEl.textContent=q>=75?'STRONG':q>=55?'GOOD':q>=35?'FAIR':'WEAK';qEl.style.color=q>=75?'var(--up)':q>=55?'#eab308':q>=35?'var(--btc)':'var(--dn)';}
+
+    // Top bar color
+    const bar=document.getElementById('tradeTopBar');
+    if(bar){
+      if(tradeState.phase==='EXIT')bar.style.background='linear-gradient(90deg,var(--dn),#ff8f3f,var(--dn))';
+      else if(tradeState.phase==='HOLD')bar.style.background='linear-gradient(90deg,var(--bl),#8b5cf6,var(--bl))';
+      else bar.style.background='linear-gradient(90deg,var(--up),#00b86e,var(--up))';
+    }
+
+    // Render action box
+    const action=document.getElementById('tradeAction'),icon=document.getElementById('tradeIcon'),label=document.getElementById('tradeLabel');
+    const title=document.getElementById('tradeTitle'),sub=document.getElementById('tradeSub');
+    const urgent=document.getElementById('tradeUrgent');
+    const lockAgeSecs=predictionLock.lockTime?(now-predictionLock.lockTime)/1000:999;
+
+    if(tradeState.phase==='ENTER'){
+      action.style.cssText='display:flex;flex-direction:column;align-items:center;justify-content:center;width:86px;height:86px;border-radius:14px;background:var(--ups);border:1px solid rgba(0,220,130,.15);transition:all .3s;flex-shrink:0';
+      icon.textContent=locked?'📈':'📉';label.textContent='BUY';label.style.color='var(--up)';
+      title.innerHTML='<span style="color:'+(locked?'var(--up)':'var(--dn)')+'">'+(locked?'↑ BUY YES':'↓ BUY NO')+'</span> — Enter Now';
+      sub.textContent='Prediction locked at $'+price.toFixed(2)+' · PTB: $'+ptb.toFixed(2)+' · Gap: $'+gap.toFixed(0);
+      urgent.style.display='none';
+    }else if(tradeState.phase==='HOLD'){
+      action.style.cssText='display:flex;flex-direction:column;align-items:center;justify-content:center;width:86px;height:86px;border-radius:14px;background:var(--bls);border:1px solid rgba(99,107,255,.15);transition:all .3s;flex-shrink:0';
+      icon.textContent='🤝';label.textContent='HOLD';label.style.color='var(--bl)';
+      title.innerHTML='Hold <span style="color:'+(locked?'var(--up)':'var(--dn)')+'">'+(locked?'YES':'NO')+'</span> — No exit triggers active';
+      sub.textContent='Bias: '+Math.round(correctBias*100)+'% correct · Gap: $'+gap.toFixed(0)+' · '+secsLeft+'s remaining';
+      urgent.style.display='none';
+    }else if(tradeState.phase==='EXIT'){
+      action.style.cssText='display:flex;flex-direction:column;align-items:center;justify-content:center;width:86px;height:86px;border-radius:14px;background:var(--dns);border:1px solid rgba(255,71,87,.15);transition:all .3s;flex-shrink:0';
+      icon.textContent='🚨';label.textContent='SELL';label.style.color='var(--dn)';
+      title.innerHTML='<span style="color:var(--dn)">⚠ EXIT SIGNAL</span> — Close '+(locked?'YES':'NO')+' position';
+      sub.textContent=exitReasons.length?exitReasons[0].text:'Exit conditions triggered · '+secsLeft+'s left';
+      urgent.style.display=urgentExit?'block':'none';
+    }
+
+    // Reason list
+    const rList=document.getElementById('tradeReasonList');
+    if(rList){
+      const rows=[];
+      rows.push({dot:'green',text:'Prediction locked: '+(locked?'YES ↑':'NO ↓')+' · Conf: '+conf+'%'});
+      rows.push({dot:correctBias>0.55?'green':correctBias<0.45?'red':'yellow',text:'On correct side '+Math.round(correctBias*100)+'% of slot so far'});
+      rows.push({dot:gap>30?'green':gap>10?'yellow':'red',text:'Gap from PTB: $'+gap.toFixed(2)+(gap>30?' — strong cushion':gap>10?' — moderate':' — close call')});
+      exitReasons.forEach(r=>{if(!rows.find(a=>a.text===r.text))rows.push(r);});
+      rList.innerHTML=rows.map(r=>'<div class="tr-row"><div class="tr-dot '+r.dot+'"></div><span>'+r.text+'</span></div>').join('');
+    }
+  }catch(e){console.warn('⚠️ updateTradeCard:',e);}
+}
+
+function _tradeRenderWait(secsLeft,msElapsed){
+  const action=document.getElementById('tradeAction'),icon=document.getElementById('tradeIcon'),label=document.getElementById('tradeLabel');
+  const title=document.getElementById('tradeTitle'),sub=document.getElementById('tradeSub');
+  if(!action)return;
+  action.style.cssText='display:flex;flex-direction:column;align-items:center;justify-content:center;width:86px;height:86px;border-radius:14px;background:var(--btcs);border:1px solid rgba(247,147,26,.15);transition:all .3s;flex-shrink:0';
+  icon.textContent='⏳';label.textContent='WAIT';label.style.color='var(--btc)';
+  const stl=Math.max(0,90-Math.floor(msElapsed/1000));
+  title.textContent=stl>0?'Analyzing... signal in ~'+stl+'s':'Locking prediction...';
+  sub.textContent='Do not enter yet — waiting for prediction to lock in';
+  const urgent=document.getElementById('tradeUrgent');if(urgent)urgent.style.display='none';
+  ['exitPtbFlip','exitTimeFinal','exitConfDrop','exitBiasFade','exitVelocity'].forEach(id=>{const el=document.getElementById(id);if(el)el.className='exit-tag';});
+  const rList=document.getElementById('tradeReasonList');
+  if(rList)rList.innerHTML='<div class="tr-row"><div class="tr-dot yellow"></div><span>Collecting position data — entry signal fires when prediction locks in</span></div>';
+  const edEl=document.getElementById('tsEntryDir');if(edEl){edEl.textContent='--';edEl.style.color='var(--tx2)';}
+  const cpEl=document.getElementById('confPercent');if(cpEl){cpEl.textContent='--';cpEl.style.color='var(--tx2)';}
+  const qEl=document.getElementById('tsQuality');if(qEl){qEl.textContent='--';qEl.style.color='var(--tx2)';}
+}
+
+function _setExitTag(id,active,urgent){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.className='exit-tag'+(urgent?' active-exit':active?' warn-exit':'');
+}
+
+// Hook into updateDisplay every tick
+const _origUpdateDisplay=updateDisplay;
+updateDisplay=function(price,volume){
+  _origUpdateDisplay(price,volume);
+  try{updateTradeCard();}catch(e){}
+};
+
 let _heartbeatCount=0;
 setInterval(()=>{
   _heartbeatCount++;
