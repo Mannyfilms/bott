@@ -639,14 +639,36 @@ function serverMakePrediction(prices, ptbPrice, candles = [], polyOdds = null) {
   return { willBeat: prediction, confidence, bullScore, bearScore, margin };
 }
 
+// Binance mirror endpoints — Railway (US) blocks api.binance.com with HTTP 451
+const BINANCE_HOSTS = [
+  'api.binance.com',
+  'api1.binance.com',
+  'api2.binance.com',
+  'api3.binance.com',
+  'api4.binance.com'
+];
+
+async function binanceFetch(path) {
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const resp = await fetch('https://' + host + path);
+      if (resp.status === 451) continue; // geo-blocked, try next mirror
+      return resp;
+    } catch(e) {
+      // network error, try next mirror
+    }
+  }
+  return null;
+}
+
 // Fetch Binance klines with volumes
 async function fetchServerKlines() {
   try {
     const now = new Date();
     const hourStart = new Date(now); hourStart.setMinutes(0, 0, 0);
     const startMs = hourStart.getTime();
-    const resp = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime=' + startMs + '&limit=60');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const resp = await binanceFetch('/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime=' + startMs + '&limit=60');
+    if (!resp || !resp.ok) throw new Error(resp ? 'HTTP ' + resp.status : 'all Binance endpoints failed');
     const klines = await resp.json();
     const candles = klines.filter(k => k[0] >= startMs).map(k => ({
       time: k[0],
@@ -715,8 +737,8 @@ async function runAutoPrediction() {
   let ptbPrice = serverHourlyPtb.hour === currentHour ? serverHourlyPtb.price : null;
   if (!ptbPrice) {
     try {
-      const resp = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
-      if (resp.ok) {
+      const resp = await binanceFetch('/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
+      if (resp && resp.ok) {
         const d = await resp.json();
         if (d && d[0]) {
           const openPrice = parseFloat(d[0][1]);
@@ -805,8 +827,8 @@ async function checkHourlyOutcome() {
 
   try {
     // Fetch the closing price of the completed 1h candle
-    const resp = await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2');
-    if (!resp.ok) return;
+    const resp = await binanceFetch('/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2');
+    if (!resp || !resp.ok) return;
     const data = await resp.json();
     if (!data || data.length < 1) return;
     // data[0] is the candle that just closed

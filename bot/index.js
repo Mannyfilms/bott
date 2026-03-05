@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { getOrCreateUser, revokeUser } = require('../server/database.js');
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -39,7 +39,7 @@ function hasRole(member) {
   return member.roles.cache.has(REQUIRED_ROLE_ID);
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log('Discord bot logged in as ' + client.user.tag);
   await registerCommands();
 });
@@ -50,7 +50,7 @@ client.on('interactionCreate', async (interaction) => {
     const { commandName, user, member } = interaction;
     if (commandName === 'getaccess') {
       if (!hasRole(member)) {
-        await interaction.reply({ content: 'You need the **Subscriber** role to access this.', ephemeral: true });
+        await interaction.reply({ content: 'You need the **Subscriber** role to access this.', flags: MessageFlags.Ephemeral });
         return;
       }
       const { code, isNew } = getOrCreateUser(user.id, user.username);
@@ -58,36 +58,36 @@ client.on('interactionCreate', async (interaction) => {
         content: isNew
           ? '**Your access code:**\n\n`' + code + '`\n\nEnter this on the website to log in. Use `/mycode` to see it again.'
           : '**Your access code:**\n\n`' + code + '`\n\nSame code as before.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
     if (commandName === 'mycode') {
       if (!hasRole(member)) {
-        await interaction.reply({ content: 'You need the **Subscriber** role.', ephemeral: true });
+        await interaction.reply({ content: 'You need the **Subscriber** role.', flags: MessageFlags.Ephemeral });
         return;
       }
       const { code } = getOrCreateUser(user.id, user.username);
-      await interaction.reply({ content: 'Your code: `' + code + '`', ephemeral: true });
+      await interaction.reply({ content: 'Your code: `' + code + '`', flags: MessageFlags.Ephemeral });
       return;
     }
     if (commandName === 'revoke') {
       if (!member.permissions.has('Administrator')) {
-        await interaction.reply({ content: 'You need Administrator permission.', ephemeral: true });
+        await interaction.reply({ content: 'You need Administrator permission.', flags: MessageFlags.Ephemeral });
         return;
       }
       const targetUser = interaction.options.getUser('user');
       const revoked = revokeUser(targetUser.id);
       await interaction.reply({
         content: revoked ? 'Access revoked for **' + targetUser.username + '**.' : 'No active access found.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
   } catch (error) {
     console.error('Command error:', error);
     if (!interaction.replied) {
-      await interaction.reply({ content: 'Something went wrong.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: 'Something went wrong.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 });

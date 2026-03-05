@@ -915,8 +915,8 @@ setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<5){
     locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];positionHistory=[];
-    tradeState={phase:'WAIT',entryPrice:null,entryTime:null,entryConf:null};
-    _freeTradeWait(3600);
+    tsState={phase:'WAIT',entryDir:null,entryPrice:null,entryConf:null};
+    _tsRenderWait(3600,0);
     document.getElementById('predDisplay').className='pred pred-nu';
     document.getElementById('predValue').textContent='--';
     document.getElementById('predConf').textContent='New hour starting...';
