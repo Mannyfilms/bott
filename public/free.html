@@ -23,8 +23,6 @@
         .card{background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);padding:20px;margin-bottom:12px}
         .ct{font-size:.65em;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--tx3);margin-bottom:14px}
         .g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-        .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-        @media(max-width:500px){.g3{grid-template-columns:1fr}}
         .plbl{font-size:.65em;text-transform:uppercase;letter-spacing:.1em;color:var(--tx3);margin-bottom:4px}
         .pbig{font-family:'JetBrains Mono',monospace;font-size:1.8em;font-weight:700}
         .psub{font-size:.7em;color:var(--tx3)}
@@ -98,42 +96,6 @@
             <div style="text-align:center"><div class="plbl">Current BTC Price</div><div class="pbig" id="currentPrice" style="color:var(--btc)">--</div><div class="psub" id="lastUpdate">--</div></div>
         </div>
         <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
-    </div>
-
-    <!-- ── Polymarket Odds + Market Intelligence ── -->
-    <div class="card">
-        <div class="ct">Market Intelligence</div>
-        <div class="g3" style="margin-bottom:12px">
-            <div style="background:var(--sf2);border:1px solid var(--bd);border-radius:10px;padding:12px;text-align:center">
-                <div class="plbl" style="font-size:.6em">Polymarket UP</div>
-                <div id="polyUp" style="font-family:'JetBrains Mono',monospace;font-size:1.3em;font-weight:700;color:var(--up)">--</div>
-                <div id="polyUpBar" style="height:3px;border-radius:2px;background:var(--bd);margin-top:6px;overflow:hidden"><div id="polyUpFill" style="height:100%;background:var(--up);width:0%;transition:width .5s"></div></div>
-            </div>
-            <div style="background:var(--sf2);border:1px solid var(--bd);border-radius:10px;padding:12px;text-align:center">
-                <div class="plbl" style="font-size:.6em">Polymarket DOWN</div>
-                <div id="polyDown" style="font-family:'JetBrains Mono',monospace;font-size:1.3em;font-weight:700;color:var(--dn)">--</div>
-                <div id="polyDownBar" style="height:3px;border-radius:2px;background:var(--bd);margin-top:6px;overflow:hidden"><div id="polyDownFill" style="height:100%;background:var(--dn);width:0%;transition:width .5s"></div></div>
-            </div>
-            <div style="background:var(--sf2);border:1px solid var(--bd);border-radius:10px;padding:12px;text-align:center">
-                <div class="plbl" style="font-size:.6em">Crowd Signal</div>
-                <div id="crowdSignal" style="font-family:'JetBrains Mono',monospace;font-size:1em;font-weight:700;color:var(--tx2)">--</div>
-                <div id="crowdConf" style="font-size:.65em;color:var(--tx3);margin-top:4px">Loading...</div>
-            </div>
-        </div>
-        <div class="g3">
-            <div style="background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px;text-align:center">
-                <div style="font-size:.58em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:3px">Market Regime</div>
-                <div id="mktRegime" style="font-family:'JetBrains Mono',monospace;font-size:.8em;font-weight:700;color:var(--tx2)">--</div>
-            </div>
-            <div style="background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px;text-align:center">
-                <div style="font-size:.58em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:3px">Volume</div>
-                <div id="volSignal" style="font-family:'JetBrains Mono',monospace;font-size:.8em;font-weight:700;color:var(--tx2)">--</div>
-            </div>
-            <div style="background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:10px;text-align:center">
-                <div style="font-size:.58em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:3px">EMA Trend</div>
-                <div id="emaTrend" style="font-family:'JetBrains Mono',monospace;font-size:.8em;font-weight:700;color:var(--tx2)">--</div>
-            </div>
-        </div>
     </div>
 
 
@@ -252,33 +214,6 @@
 let btcPrice=null,ptb=null,ptbSetAt=null,locked=false,prediction=null;
 let displayPrice=null,latestBtcPrice=null,latestChainlinkPrice=null;
 let btcWs=null,polyWs=null;
-
-// ── Polymarket Odds + Market Intelligence ──
-let polyOdds={upPrice:null,downPrice:null,lastFetch:0};
-async function fetchPolyOdds(){
-  try{
-    const r=await fetch('/api/polymarket-odds');const d=await r.json();
-    if(d.upPrice){
-      polyOdds={upPrice:d.upPrice,downPrice:d.downPrice,lastFetch:Date.now()};
-      // Update UI
-      const up=(d.upPrice*100).toFixed(1)+'%';
-      const dn=(d.downPrice*100).toFixed(1)+'%';
-      document.getElementById('polyUp').textContent=up;
-      document.getElementById('polyDown').textContent=dn;
-      document.getElementById('polyUpFill').style.width=(d.upPrice*100)+'%';
-      document.getElementById('polyDownFill').style.width=(d.downPrice*100)+'%';
-      const diff=Math.abs(d.upPrice-0.5)*200;
-      const dir=d.upPrice>0.5?'UP ↑':'DOWN ↓';
-      const col=d.upPrice>0.5?'var(--up)':'var(--dn)';
-      document.getElementById('crowdSignal').textContent=dir;
-      document.getElementById('crowdSignal').style.color=col;
-      document.getElementById('crowdConf').textContent=diff.toFixed(0)+'% lean'+
-        (diff>20?' — strong':(diff>10?' — moderate':' — neutral'));
-    }
-  }catch(e){}
-}
-setInterval(fetchPolyOdds,10000);
-setTimeout(fetchPolyOdds,2000);
 let priceHistory=[]; // {price, time, open, high, low, close, volume}
 let sentimentData={fearGreed:50,funding:0,sentiment:'NEUTRAL'};
 let ptbHour=-1;
@@ -484,39 +419,6 @@ function makeTechnicalPrediction(prices){
   if(fr>0.02){bearScore+=1;signals.push({name:'Funding: High positive — overleveraged ('+fr.toFixed(4)+'%)',up:false,strength:1})}
   else if(fr<-0.005){bullScore+=1;signals.push({name:'Funding: Negative — shorts dominate ('+fr.toFixed(4)+'%)',up:true,strength:1})}
   else signals.push({name:'Funding: Normal ('+fr.toFixed(4)+'%)',up:null,strength:0});
-
-  // 9. ── Polymarket Odds (crowd wisdom — strongest external signal) ──
-  if(polyOdds.upPrice&&polyOdds.downPrice){
-    const up=polyOdds.upPrice;
-    if(up>0.65){const w=(up-0.5)*8;bullScore+=w;signals.push({name:'Polymarket: Market leans UP ('+Math.round(up*100)+'%)',up:true,strength:parseFloat(w.toFixed(1))})}
-    else if(up<0.35){const w=(0.5-up)*8;bearScore+=w;signals.push({name:'Polymarket: Market leans DOWN ('+(100-Math.round(up*100))+'%)',up:false,strength:parseFloat(w.toFixed(1))})}
-    else if(up>0.55){bullScore+=0.8;signals.push({name:'Polymarket: Slight UP lean ('+Math.round(up*100)+'%)',up:true,strength:0.8})}
-    else if(up<0.45){bearScore+=0.8;signals.push({name:'Polymarket: Slight DOWN lean ('+(100-Math.round(up*100))+'%)',up:false,strength:0.8})}
-    else signals.push({name:'Polymarket: No clear lean ('+Math.round(up*100)+'%/'+Math.round(polyOdds.downPrice*100)+'%)',up:null,strength:0});
-  }
-
-  // 10. ── Volume Confirmation ──
-  if(prices.length>=20){
-    const recentVol=prices.slice(-3).reduce((s,p)=>s+Math.abs(p-(prices[prices.length-4]||p)),0)/3;
-    const avgVol=prices.slice(-20).reduce((s,p,i,a)=>s+(i>0?Math.abs(p-a[i-1]):0),0)/19;
-    const volRatio=avgVol>0?recentVol/avgVol:1;
-    const rising=prices[prices.length-1]>prices[prices.length-4];
-    if(volRatio>1.3&&rising){bullScore+=1.2;signals.push({name:'Volume: Rising on up-move ('+volRatio.toFixed(1)+'x avg)',up:true,strength:1.2})}
-    else if(volRatio>1.3&&!rising){bearScore+=1.2;signals.push({name:'Volume: Rising on down-move ('+volRatio.toFixed(1)+'x avg)',up:false,strength:1.2})}
-    else signals.push({name:'Volume: Normal ('+volRatio.toFixed(1)+'x avg)',up:null,strength:0});
-  }
-
-  // 11. ── Market Regime (ADX-like: trending vs ranging) ──
-  if(prices.length>=30){
-    let pDM=0,nDM=0,tr=0,prd=14;
-    for(let i=prices.length-prd;i<prices.length;i++){const d=prices[i]-prices[i-1];if(d>0)pDM+=d;else nDM+=Math.abs(d);tr+=Math.abs(d);}
-    const adxVal=tr>0?Math.abs(pDM-nDM)/(pDM+nDM)*100:0;
-    const trending=adxVal>25;
-    const upTrend=pDM>nDM;
-    if(trending&&upTrend){bullScore+=0.8;signals.push({name:'Regime: Trending UP (ADX '+adxVal.toFixed(0)+')',up:true,strength:0.8})}
-    else if(trending&&!upTrend){bearScore+=0.8;signals.push({name:'Regime: Trending DOWN (ADX '+adxVal.toFixed(0)+')',up:false,strength:0.8})}
-    else signals.push({name:'Regime: Ranging/Choppy (ADX '+adxVal.toFixed(0)+')',up:null,strength:0});
-  };
 
   // 9. Position tracking — how long has price been above/below PTB?
   // This is the strongest signal for "will it beat PTB" predictions
@@ -885,29 +787,6 @@ function renderSignals(sigs){
     const str=s.strength>0?'<span style="color:var(--tx3);font-size:.9em">'+s.strength.toFixed(1)+'</span>':'';
     return'<div class="sig '+cls+'"><span>'+s.name+'</span><span style="display:flex;align-items:center;gap:6px">'+str+'<span style="color:'+col+'">'+arrow+'</span></span></div>';
   }).join('');
-  // ── Update market intelligence panel ──
-  updateIntelPanel(sigs);
-}
-
-function updateIntelPanel(sigs){
-  // EMA trend
-  const emaSig=sigs.find(s=>s.name&&s.name.startsWith('EMA:'));
-  if(emaSig){
-    const el=document.getElementById('emaTrend');
-    if(el){el.textContent=emaSig.up?'Bullish ↑':'Bearish ↓';el.style.color=emaSig.up?'var(--up)':'var(--dn)';}
-  }
-  // Volume
-  const volSig=sigs.find(s=>s.name&&s.name.startsWith('Volume:'));
-  if(volSig){
-    const el=document.getElementById('volSignal');
-    if(el){el.textContent=volSig.name.replace('Volume:','').trim();el.style.color=volSig.up?'var(--up)':volSig.up===false?'var(--dn)':'var(--tx2)';}
-  }
-  // Market regime (ADX)
-  const adxSig=sigs.find(s=>s.name&&s.name.startsWith('Regime:'));
-  if(adxSig){
-    const el=document.getElementById('mktRegime');
-    if(el){el.textContent=adxSig.name.replace('Regime:','').trim();el.style.color=adxSig.up?'var(--up)':adxSig.up===false?'var(--dn)':'var(--tx2)';}
-  }
 }
 
 // Reset at new hour
@@ -915,8 +794,8 @@ setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<5){
     locked=false;prediction=null;clearLock();ptb=null;priceHistory=[];positionHistory=[];
-    tsState={phase:'WAIT',entryDir:null,entryPrice:null,entryConf:null};
-    _tsRenderWait(3600,0);
+    tradeState={phase:'WAIT',entryPrice:null,entryTime:null,entryConf:null};
+    _freeTradeWait(3600);
     document.getElementById('predDisplay').className='pred pred-nu';
     document.getElementById('predValue').textContent='--';
     document.getElementById('predConf').textContent='New hour starting...';
@@ -993,6 +872,7 @@ function updateTradeSignal(){
       tsState.entryDir=dir?'YES':'NO';
       tsState.entryPrice=price;
       tsState.entryConf=conf;
+      tsState.holdSince=null;
     }
 
     // Update entry price display
@@ -1040,9 +920,10 @@ function updateTradeSignal(){
 
     // Phase transitions
     const hasExit=ptbFlip||confDrop||biasFade||finalMins||velSignal;
-    if(tsState.phase==='ENTER')tsState.phase='HOLD';
+    if(tsState.phase==='ENTER'){tsState.phase='HOLD';tsState.holdSince=now;}
     if(hasExit&&tsState.phase==='HOLD')tsState.phase='EXIT';
     if(!hasExit&&tsState.phase==='EXIT')tsState.phase='HOLD';
+    const inHoldLongEnough=tsState.holdSince&&(now-tsState.holdSince)>10000;
 
     // Signal quality (same formula)
     const q=Math.round((conf/100)*40+correctBias*30+(!onWrongSide?20:0)+(gap>50?10:gap>20?5:0));
@@ -1078,7 +959,7 @@ function updateTradeSignal(){
       icon.textContent='🚨';label.textContent='SELL';label.style.color='var(--dn)';
       title.innerHTML='<span style="color:var(--dn)">⚠ EXIT SIGNAL</span> — Close '+(dir?'YES':'NO')+' position';
       sub.textContent=exitReasons.length?exitReasons[0].text:'Exit conditions triggered · '+minsLeft+'m left';
-      urgent.style.display=urgentExit?'block':'none';
+      urgent.style.display=(urgentExit&&inHoldLongEnough)?'block':'none';
     }
 
     // Reason list
@@ -1127,10 +1008,6 @@ window._tsHourReset=setInterval(()=>{
     _tsRenderWait(0,0);
     const bar=document.getElementById('tsTopBar');
     if(bar)bar.style.background='linear-gradient(90deg,var(--btc),#e07c0e,var(--btc))';
-    // Clear stale metric displays so they show -- until new hour data arrives
-    const ep=document.getElementById('tsEntryPrice');if(ep)ep.textContent='--';
-    const pm=document.getElementById('tsPtbMetric');if(pm)pm.textContent='--';
-    const pnl=document.getElementById('tsPnl');if(pnl){pnl.textContent='--';pnl.style.color='';}
   }
 },1000);
 
