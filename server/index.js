@@ -183,7 +183,9 @@ let topTradersCache = { wallets: [], lastDiscovery: 0 };
 let whaleCache = { trades: null, lastFetch: 0 };
 
 async function discoverTopTraders() {
-  if (topTradersCache.wallets.length > 0 && Date.now() - topTradersCache.lastDiscovery < 300000) {
+  // Cache hit: 5 min if traders found, 60 s if none found (avoids log spam on every poll)
+  const ttl = topTradersCache.wallets.length > 0 ? 300000 : 60000;
+  if (Date.now() - topTradersCache.lastDiscovery < ttl) {
     return topTradersCache;
   }
   try {
@@ -246,7 +248,8 @@ async function discoverTopTraders() {
       topTradersCache = { wallets: ranked, lastDiscovery: Date.now() };
       console.log('🏆 Top traders: ' + ranked.map(t => t.username + ' (' + (t.winRate * 100).toFixed(0) + '%)').join(', '));
     } else {
-      console.log('🔍 No qualifying traders found yet');
+      topTradersCache = { wallets: [], lastDiscovery: Date.now() }; // stamp so 60s TTL applies
+      console.log('🔍 No qualifying traders found — will retry in 60s');
     }
     return topTradersCache;
   } catch(e) {
@@ -661,27 +664,40 @@ async function binanceFetch(path) {
   return null;
 }
 
-// Fetch Binance klines with volumes
+// Fetch Binance klines with volumes — falls back to Bybit if all Binance mirrors are blocked
 async function fetchServerKlines() {
+  const now = new Date();
+  const hourStart = new Date(now); hourStart.setMinutes(0, 0, 0);
+  const startMs = hourStart.getTime();
+
+  // 1) Try Binance mirrors
   try {
-    const now = new Date();
-    const hourStart = new Date(now); hourStart.setMinutes(0, 0, 0);
-    const startMs = hourStart.getTime();
     const resp = await binanceFetch('/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime=' + startMs + '&limit=60');
-    if (!resp || !resp.ok) throw new Error(resp ? 'HTTP ' + resp.status : 'all Binance endpoints failed');
-    const klines = await resp.json();
-    const candles = klines.filter(k => k[0] >= startMs).map(k => ({
-      time: k[0],
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5])
+    if (resp && resp.ok) {
+      const klines = await resp.json();
+      const candles = klines.filter(k => k[0] >= startMs).map(k => ({
+        time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
+        low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5])
+      }));
+      return { closes: candles.map(c => c.close), candles };
+    }
+  } catch(e) {}
+
+  // 2) Bybit fallback — list is descending, reverse to ascending
+  try {
+    const resp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&start=' + startMs + '&limit=60');
+    if (!resp.ok) throw new Error('Bybit HTTP ' + resp.status);
+    const json = await resp.json();
+    if (json.retCode !== 0) throw new Error('Bybit error ' + json.retCode);
+    const list = (json.result?.list || []).slice().reverse(); // ascending order
+    const candles = list.filter(k => parseInt(k[0]) >= startMs).map(k => ({
+      time: parseInt(k[0]), open: parseFloat(k[1]), high: parseFloat(k[2]),
+      low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5])
     }));
-    const closes = candles.map(c => c.close);
-    return { closes, candles };
+    console.log('📡 Kline source: Bybit (' + candles.length + ' candles)');
+    return { closes: candles.map(c => c.close), candles };
   } catch(e) {
-    console.warn('⚠️ Server kline fetch failed:', e.message);
+    console.warn('⚠️ Server kline fetch failed (all sources):', e.message);
     return null;
   }
 }
@@ -736,21 +752,31 @@ async function runAutoPrediction() {
   // Get or set PTB
   let ptbPrice = serverHourlyPtb.hour === currentHour ? serverHourlyPtb.price : null;
   if (!ptbPrice) {
+    let openPrice = null;
+    // Try Binance mirrors
     try {
       const resp = await binanceFetch('/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1');
       if (resp && resp.ok) {
         const d = await resp.json();
-        if (d && d[0]) {
-          const openPrice = parseFloat(d[0][1]);
-          if (openPrice > 30000 && openPrice < 200000) {
-            serverHourlyPtb = { price: openPrice, hour: currentHour, timestamp: Date.now() };
-            saveState('hourlyPtb', serverHourlyPtb);
-            ptbPrice = openPrice;
-            console.log('📌 Auto-set hourly PTB: $' + openPrice.toFixed(2));
-          }
-        }
+        if (d && d[0]) openPrice = parseFloat(d[0][1]);
       }
     } catch(e) {}
+    // Bybit fallback
+    if (!openPrice) {
+      try {
+        const resp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=60&limit=1');
+        if (resp.ok) {
+          const json = await resp.json();
+          if (json.retCode === 0 && json.result?.list?.length) openPrice = parseFloat(json.result.list[0][1]);
+        }
+      } catch(e) {}
+    }
+    if (openPrice && openPrice > 30000 && openPrice < 200000) {
+      serverHourlyPtb = { price: openPrice, hour: currentHour, timestamp: Date.now() };
+      saveState('hourlyPtb', serverHourlyPtb);
+      ptbPrice = openPrice;
+      console.log('📌 Auto-set hourly PTB: $' + openPrice.toFixed(2));
+    }
   }
 
   // Fetch Polymarket odds for the signal
@@ -827,12 +853,23 @@ async function checkHourlyOutcome() {
 
   try {
     // Fetch the closing price of the completed 1h candle
+    let closePrice = null;
     const resp = await binanceFetch('/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2');
-    if (!resp || !resp.ok) return;
-    const data = await resp.json();
-    if (!data || data.length < 1) return;
-    // data[0] is the candle that just closed
-    const closePrice = parseFloat(data[0][4]);
+    if (resp && resp.ok) {
+      const data = await resp.json();
+      if (data && data.length >= 1) closePrice = parseFloat(data[0][4]);
+    }
+    // Bybit fallback — list is descending; list[1] = just-completed hourly candle
+    if (!closePrice) {
+      try {
+        const bResp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=60&limit=2');
+        if (bResp.ok) {
+          const bJson = await bResp.json();
+          if (bJson.retCode === 0 && bJson.result?.list?.length >= 2) closePrice = parseFloat(bJson.result.list[1][4]);
+        }
+      } catch(e2) {}
+    }
+    if (!closePrice) return;
     const actualDirection = closePrice > ptbPrice ? 'UP' : 'DOWN';
     const updated = resolvePrediction('hourly', slotTs, actualDirection);
     if (updated) {
