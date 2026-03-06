@@ -1845,6 +1845,10 @@ resetPredictionLock=function(){
   _origResetPredictionLock();
   tradeState={phase:'WAIT',entryDirection:null,entryPrice:null,entryTime:null,entryConf:null};
   _tradeRenderWait(0,0);
+  // Clear stale metric displays so they show -- until new 5-min slot data arrives
+  const ep=document.getElementById('tsEntryPrice');if(ep)ep.textContent='--';
+  const tg=document.getElementById('tsTarget');if(tg)tg.textContent='--';
+  const pnl=document.getElementById('tsPnl');if(pnl){pnl.textContent='--';pnl.style.color='';}
 };
 
 function updateTradeCard(){

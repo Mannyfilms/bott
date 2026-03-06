@@ -1127,6 +1127,10 @@ window._tsHourReset=setInterval(()=>{
     _tsRenderWait(0,0);
     const bar=document.getElementById('tsTopBar');
     if(bar)bar.style.background='linear-gradient(90deg,var(--btc),#e07c0e,var(--btc))';
+    // Clear stale metric displays so they show -- until new hour data arrives
+    const ep=document.getElementById('tsEntryPrice');if(ep)ep.textContent='--';
+    const pm=document.getElementById('tsPtbMetric');if(pm)pm.textContent='--';
+    const pnl=document.getElementById('tsPnl');if(pnl){pnl.textContent='--';pnl.style.color='';}
   }
 },1000);
 

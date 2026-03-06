@@ -165,6 +165,10 @@ app.post('/api/pred-lock-hourly', (req, res) => {
       serverHourlyPredLock = { hour, prediction, ts: ts || Date.now() };
       saveState('hourlyPredLock', serverHourlyPredLock);
       console.log('🔒 Hourly prediction locked (from client): ' + (prediction.willBeat ? 'YES' : 'NO') + ' (' + prediction.confidence + '%)');
+      // Record in DB for win rate tracking
+      const slotTs = Math.floor(Date.now() / 1000 / 3600) * 3600;
+      const direction = prediction.willBeat ? 'UP' : 'DOWN';
+      recordPrediction('hourly', slotTs, direction, prediction.confidence || 0);
     }
   }
   res.json({ ok: true });
