@@ -689,7 +689,8 @@ async function fetchServerKlines() {
 
   // 2) Bybit fallback — list is descending, reverse to ascending
   try {
-    const resp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&start=' + startMs + '&limit=60');
+    const resp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&start=' + startMs + '&limit=60',
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; btc-predictor/1.0)' } });
     if (!resp.ok) throw new Error('Bybit HTTP ' + resp.status);
     const json = await resp.json();
     if (json.retCode !== 0) throw new Error('Bybit error ' + json.retCode);
@@ -699,6 +700,21 @@ async function fetchServerKlines() {
       low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5])
     }));
     console.log('📡 Kline source: Bybit (' + candles.length + ' candles)');
+    return { closes: candles.map(c => c.close), candles };
+  } catch(e) {}
+
+  // 3) OKX fallback — data is descending, reverse to ascending
+  try {
+    const resp = await fetch('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=1m&limit=60');
+    if (!resp.ok) throw new Error('OKX HTTP ' + resp.status);
+    const json = await resp.json();
+    if (json.code !== '0') throw new Error('OKX error ' + json.code);
+    const list = (json.data || []).slice().reverse(); // ascending order
+    const candles = list.filter(k => parseInt(k[0]) >= startMs).map(k => ({
+      time: parseInt(k[0]), open: parseFloat(k[1]), high: parseFloat(k[2]),
+      low: parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5])
+    }));
+    console.log('📡 Kline source: OKX (' + candles.length + ' candles)');
     return { closes: candles.map(c => c.close), candles };
   } catch(e) {
     console.warn('⚠️ Server kline fetch failed (all sources):', e.message);
@@ -768,10 +784,21 @@ async function runAutoPrediction() {
     // Bybit fallback
     if (!openPrice) {
       try {
-        const resp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=60&limit=1');
+        const resp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=60&limit=1',
+          { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; btc-predictor/1.0)' } });
         if (resp.ok) {
           const json = await resp.json();
           if (json.retCode === 0 && json.result?.list?.length) openPrice = parseFloat(json.result.list[0][1]);
+        }
+      } catch(e) {}
+    }
+    // OKX fallback
+    if (!openPrice) {
+      try {
+        const resp = await fetch('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=1H&limit=1');
+        if (resp.ok) {
+          const json = await resp.json();
+          if (json.code === '0' && json.data?.length) openPrice = parseFloat(json.data[0][1]);
         }
       } catch(e) {}
     }
@@ -866,12 +893,23 @@ async function checkHourlyOutcome() {
     // Bybit fallback — list is descending; list[1] = just-completed hourly candle
     if (!closePrice) {
       try {
-        const bResp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=60&limit=2');
+        const bResp = await fetch('https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=60&limit=2',
+          { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; btc-predictor/1.0)' } });
         if (bResp.ok) {
           const bJson = await bResp.json();
           if (bJson.retCode === 0 && bJson.result?.list?.length >= 2) closePrice = parseFloat(bJson.result.list[1][4]);
         }
       } catch(e2) {}
+    }
+    // OKX fallback — data is descending; data[1] = just-completed hourly candle
+    if (!closePrice) {
+      try {
+        const oResp = await fetch('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=1H&limit=2');
+        if (oResp.ok) {
+          const oJson = await oResp.json();
+          if (oJson.code === '0' && oJson.data?.length >= 2) closePrice = parseFloat(oJson.data[1][4]);
+        }
+      } catch(e3) {}
     }
     if (!closePrice) return;
     const actualDirection = closePrice > ptbPrice ? 'UP' : 'DOWN';
