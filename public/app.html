@@ -1747,7 +1747,7 @@ let tradeState={phase:'WAIT',entryDirection:null,entryPrice:null,entryTime:null,
 const _origResetPredictionLock=resetPredictionLock;
 resetPredictionLock=function(){
   _origResetPredictionLock();
-  tradeState={phase:'WAIT',entryDirection:null,entryPrice:null,entryTime:null,entryConf:null};
+  tradeState={phase:'WAIT',entryDirection:null,entryPrice:null,entryTime:null,entryConf:null,holdSince:null,enterSince:null};
   _tradeRenderWait(0,0);
 };
 
@@ -1797,9 +1797,12 @@ function updateTradeCard(){
 
     // ── EXIT MONITORS ──
     const exitReasons=[];let urgentExit=false;
-    const ptbFlip=onWrongSide&&gap>15;
-    if(ptbFlip){exitReasons.push({dot:'red',text:'Price $'+gap.toFixed(0)+' on wrong side of PTB'+(gap>40?' — strong reversal':'')});if(gap>40)urgentExit=true;}
-    _setExitTag('exitPtbFlip',ptbFlip,gap>40);
+    // PTB flip: only trigger if price has closed >60% of the entry gap back toward PTB
+    const entryGap=tradeState.entryPrice&&ptb?Math.abs(tradeState.entryPrice-ptb):30;
+    const flipThreshold=Math.max(20,entryGap*0.6);
+    const ptbFlip=onWrongSide&&gap>flipThreshold;
+    if(ptbFlip){exitReasons.push({dot:'red',text:'Price $'+gap.toFixed(0)+' on wrong side of PTB (threshold: $'+flipThreshold.toFixed(0)+')'+(gap>entryGap?' — worse than entry!':'')});if(gap>entryGap)urgentExit=true;}
+    _setExitTag('exitPtbFlip',ptbFlip,gap>entryGap);
     const finalSecs=secsLeft<=60&&secsLeft>0;
     if(finalSecs){exitReasons.push({dot:'yellow',text:'Final '+secsLeft+'s — consider locking in position'});if(onWrongSide&&secsLeft<20)urgentExit=true;}
     _setExitTag('exitTimeFinal',finalSecs,secsLeft<20);
@@ -1813,11 +1816,15 @@ function updateTradeCard(){
     if(jp.length>=8){const r3=jp.slice(-3).reduce((s,p)=>s+p,0)/3,p3=jp.slice(-6,-3).reduce((s,p)=>s+p,0)/3,vel=r3-p3;velSignal=locked?(vel<-20):(vel>20);if(velSignal)exitReasons.push({dot:'blue',text:'Momentum reversing '+(vel>0?'↑':'↓')+'$'+Math.abs(vel).toFixed(0)+'/tick'});}
     _setExitTag('exitVelocity',velSignal,false);
 
-    // Phase transitions
+    // Phase transitions — EXIT is a one-way latch for the slot
     const hasExit=ptbFlip||confDrop||biasFade||finalSecs||velSignal;
-    if(tradeState.phase==='ENTER'){tradeState.phase='HOLD';tradeState.holdSince=now;}
+    if(tradeState.phase==='ENTER'){
+      if(!tradeState.enterSince)tradeState.enterSince=now;
+      // Stay in BUY state for 45s so user has time to see and act
+      if((now-tradeState.enterSince)>45000){tradeState.phase='HOLD';tradeState.holdSince=now;}
+    }
     if(hasExit&&tradeState.phase==='HOLD')tradeState.phase='EXIT';
-    if(!hasExit&&tradeState.phase==='EXIT')tradeState.phase='HOLD';
+    // Once EXIT, stay EXIT — don't flip back to HOLD
 
     // Only show urgent banner if user has been in HOLD for at least 10s (they saw the entry signal)
     const inHoldLongEnough=tradeState.holdSince&&(now-tradeState.holdSince)>10000;
