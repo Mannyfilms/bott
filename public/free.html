@@ -820,7 +820,7 @@ setInterval(()=>{
 // ═══════════════════════════════════════════════════════
 // TRADING SIGNAL ENGINE — Free tier (1-hour slots)
 // ═══════════════════════════════════════════════════════
-let tsState={phase:'WAIT',entryDir:null,entryPrice:null,entryConf:null};
+let tsState={phase:'WAIT',entryDir:null,entryPrice:null,entryConf:null,holdSince:null,enterSince:null};
 
 function updateTradeSignal(){
   try{
@@ -889,9 +889,12 @@ function updateTradeSignal(){
     const exitReasons=[];let urgentExit=false;
 
     // 1. PTB Flip — price >$20 on wrong side (bigger threshold for 1h)
-    const ptbFlip=onWrongSide&&gap>20;
-    if(ptbFlip){exitReasons.push({dot:'red',text:'Price $'+gap.toFixed(0)+' on wrong side of PTB'+(gap>60?' — strong reversal':'')});if(gap>60)urgentExit=true;}
-    _xTag('xPtbFlip',ptbFlip,gap>60);
+    // PTB flip: only trigger if price has closed >60% of entry gap back toward PTB
+    const entryGap=tsState.entryPrice&&ptb?Math.abs(tsState.entryPrice-ptb):50;
+    const flipThreshold=Math.max(30,entryGap*0.6);
+    const ptbFlip=onWrongSide&&gap>flipThreshold;
+    if(ptbFlip){exitReasons.push({dot:'red',text:'Price $'+gap.toFixed(0)+' on wrong side of PTB (threshold: $'+flipThreshold.toFixed(0)+')'+(gap>entryGap?' — worse than entry!':'')});if(gap>entryGap)urgentExit=true;}
+    _xTag('xPtbFlip',ptbFlip,gap>entryGap);
 
     // 2. Final 10 minutes
     const finalMins=minsLeft<=10&&minsLeft>=0;
@@ -918,11 +921,15 @@ function updateTradeSignal(){
     }
     _xTag('xVelocity',velSignal,false);
 
-    // Phase transitions
+    // Phase transitions — EXIT is a one-way latch for the slot
     const hasExit=ptbFlip||confDrop||biasFade||finalMins||velSignal;
-    if(tsState.phase==='ENTER'){tsState.phase='HOLD';tsState.holdSince=now;}
+    if(tsState.phase==='ENTER'){
+      if(!tsState.enterSince)tsState.enterSince=now;
+      // Stay in BUY state for 2 min so user has time to see and act
+      if((now-tsState.enterSince)>120000){tsState.phase='HOLD';tsState.holdSince=now;}
+    }
     if(hasExit&&tsState.phase==='HOLD')tsState.phase='EXIT';
-    if(!hasExit&&tsState.phase==='EXIT')tsState.phase='HOLD';
+    // Once EXIT, stay EXIT — don't flip back to HOLD
     const inHoldLongEnough=tsState.holdSince&&(now-tsState.holdSince)>10000;
 
     // Signal quality (same formula)
@@ -1004,7 +1011,7 @@ const _origHourReset=setInterval;
 window._tsHourReset=setInterval(()=>{
   const now=new Date();
   if(now.getMinutes()===0&&now.getSeconds()<6){
-    tsState={phase:'WAIT',entryDir:null,entryPrice:null,entryConf:null};
+    tsState={phase:'WAIT',entryDir:null,entryPrice:null,entryConf:null,holdSince:null,enterSince:null};
     _tsRenderWait(0,0);
     const bar=document.getElementById('tsTopBar');
     if(bar)bar.style.background='linear-gradient(90deg,var(--btc),#e07c0e,var(--btc))';
