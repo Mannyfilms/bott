@@ -123,6 +123,17 @@
     .hitem{padding:11px;border-bottom:1px solid var(--bd);font-size:.8em}
     .hitem:last-child{border-bottom:none}
     .correct{color:var(--up);font-weight:600}.incorrect{color:var(--dn);font-weight:600}
+
+    /* ═══ TRADING SIGNAL ═══ */
+    @keyframes tradePulse{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+    @keyframes urgentPulse{0%,100%{opacity:1}50%{opacity:.55}}
+    .tr-row{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:.76em;color:var(--tx2);border-bottom:1px solid var(--bd)}
+    .tr-row:last-child{border-bottom:none}
+    .tr-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:5px}
+    .tr-dot.green{background:var(--up)}.tr-dot.red{background:var(--dn)}.tr-dot.yellow{background:var(--btc)}.tr-dot.blue{background:var(--bl)}
+    .exit-tag{display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:20px;font-size:.7em;font-weight:600;background:var(--sf2);border:1px solid var(--bd);color:var(--tx3);transition:all .3s}
+    .exit-tag.active-exit{background:var(--dns);border-color:rgba(255,71,87,.2);color:var(--dn)}
+    .exit-tag.warn-exit{background:var(--btcs);border-color:rgba(247,147,26,.2);color:var(--btc)}
 </style>
 ```
 
@@ -159,6 +170,87 @@
     <div class="vs"><div class="vsl">Current vs Target</div><div class="vsv" id="vsComparison">--</div></div>
 </div>
 
+<div class="card" id="tradeCard" style="position:relative;overflow:hidden">
+    <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--up),#00b86e,var(--up));background-size:200% 100%;animation:tradePulse 3s linear infinite" id="tradeTopBar"></div>
+    <div class="ct">Prediction</div>
+
+    <!-- Hero: direction + timer -->
+    <div style="display:grid;grid-template-columns:1fr auto;gap:18px;align-items:center;margin-bottom:18px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+            <div id="predDirection" style="font-size:2em;font-weight:800;letter-spacing:-.02em;line-height:1">⏳ Analyzing...</div>
+            <div id="predSubtext" style="font-size:.82em;color:var(--tx2);line-height:1.5">Collecting data — prediction locks ~90s into slot</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+                <div style="display:flex;align-items:center;gap:6px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px">
+                    <span style="font-size:.65em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">Confidence</span>
+                    <span id="confPercent" style="font-family:'JetBrains Mono',monospace;font-size:.82em;font-weight:700;color:var(--tx2)">--</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;background:var(--sf2);border:1px solid var(--bd);border-radius:6px;padding:5px 10px">
+                    <span style="font-size:.65em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">Gap</span>
+                    <span id="predGap" style="font-family:'JetBrains Mono',monospace;font-size:.82em;font-weight:700;color:var(--tx2)">--</span>
+                </div>
+            </div>
+        </div>
+        <!-- Slot timer ring -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0">
+            <div style="width:54px;height:54px;position:relative">
+                <svg viewBox="0 0 54 54" style="width:54px;height:54px;transform:rotate(-90deg)">
+                    <circle fill="none" stroke="var(--sf3)" stroke-width="4" cx="27" cy="27" r="22"/>
+                    <circle fill="none" id="timerRing" stroke="var(--up)" stroke-width="4" stroke-linecap="round" cx="27" cy="27" r="22" stroke-dasharray="138.2" stroke-dashoffset="0" style="transition:stroke-dashoffset .8s ease,stroke .3s"/>
+                </svg>
+                <div id="timerVal" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:'JetBrains Mono',monospace;font-size:.68em;font-weight:700">--</div>
+            </div>
+            <div style="font-size:.6em;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3)">slot left</div>
+        </div>
+    </div>
+
+    <!-- Confidence bar (still needed by JS) -->
+    <div style="display:none"><div class="cftrack"><div class="cffill" id="confidenceMeter" style="width:0%"></div></div></div>
+
+    <!-- ML Models -->
+    <div class="g3" style="margin-bottom:14px">
+        <div class="mc"><h4>LSTM</h4><div class="mp" id="model1Pred">--</div><div class="mcc" id="model1Conf">--%</div></div>
+        <div class="mc"><h4>Technical</h4><div class="mp" id="model2Pred">--</div><div class="mcc" id="model2Conf">--%</div></div>
+        <div class="mc"><h4>Hybrid</h4><div class="mp" id="model3Pred">--</div><div class="mcc" id="model3Conf">--%</div></div>
+    </div>
+
+    <!-- Pattern detection (kept for JS) -->
+    <div class="pat" id="patternSection"><span id="patternName"></span></div>
+
+    <!-- Signal breakdown -->
+    <div class="sigw"><h3>Signal Breakdown</h3><div id="signalList" style="color:var(--tx3);font-size:.8em">Waiting&hellip;</div></div>
+
+    <!-- Hidden prediction elements JS still writes to -->
+    <div style="display:none">
+        <div id="predictionDisplay"></div>
+        <div id="predictionValue"></div>
+        <div id="predictionConfidence"></div>
+        <div id="predictionDetails"></div>
+        <div id="nextCheckTime"></div>
+        <div id="tsProgress"></div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="ct">Market Sentiment</div>
+    <div class="g6">
+        <div class="echip"><div class="cl">Fear &amp; Greed</div><div class="cv" id="fearGreed">--</div></div>
+        <div class="echip"><div class="cl">Sentiment</div><div class="cv" id="sentiment">--</div></div>
+        <div class="echip"><div class="cl">BTC Dominance</div><div class="cv" id="btcDominance">--</div></div>
+        <div class="echip"><div class="cl">Funding Rate</div><div class="cv" id="fundingRate">--</div></div>
+        <div class="echip"><div class="cl">Exchange Flow</div><div class="cv" id="exchangeFlow">--</div></div>
+        <div class="echip"><div class="cl">Whale Activity</div><div class="cv" id="whaleActivity">--</div></div>
+    </div>
+</div>
+
+<!-- Hidden: JS needs these IDs -->
+<div style="display:none"><span id="sma5"></span><span id="sma10"></span><span id="sma20"></span><span id="ema12"></span><span id="rsi"></span><span id="stochastic"></span><span id="bbUpper"></span><span id="bbLower"></span><span id="macd"></span><span id="atr"></span><span id="volumeTrend"></span><span id="momentum"></span><span id="themeBtn"></span></div>
+
+<!-- Hidden: JS needs these IDs -->
+<div style="display:none">
+    <span id="totalPredictions"></span><span id="correctPredictions"></span><span id="accuracyRate"></span>
+    <span id="highConfAccuracy"></span><span id="winStreak"></span><span id="skippedCount"></span>
+    <div id="signalPerformance"></div>
+</div>
 
 <!-- HOW IT WORKS -->
 <div class="card">
@@ -1601,6 +1693,89 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 // ═══ HEARTBEAT — independent check that page is alive ═══
+// ═══════════════════════════════════════════════════════
+// TRADING SIGNAL ENGINE
+// ═══════════════════════════════════════════════════════
+let tradeState={phase:'WAIT'};
+
+const _origResetPredictionLock=resetPredictionLock;
+resetPredictionLock=function(){
+  _origResetPredictionLock();
+  tradeState={phase:'WAIT'};
+  // Reset prediction display
+  const dir=document.getElementById('predDirection');
+  if(dir)dir.innerHTML='⏳ Analyzing...';
+  if(dir)dir.style.color='var(--tx2)';
+  const sub=document.getElementById('predSubtext');
+  if(sub)sub.textContent='Collecting data — prediction locks ~90s into slot';
+  const cp=document.getElementById('confPercent');if(cp){cp.textContent='--';cp.style.color='var(--tx2)';}
+  const gp=document.getElementById('predGap');if(gp){gp.textContent='--';gp.style.color='var(--tx2)';}
+  const bar=document.getElementById('tradeTopBar');
+  if(bar)bar.style.background='linear-gradient(90deg,var(--btc),#d4a017,var(--btc))';
+};
+
+function updateTradeCard(){
+  try{
+    const m=getActiveMarket(),ptb=m.priceToBeat,price=latestBtcPrice;
+    if(!price)return;
+    const slotEnd=getSlotEnd(selectedTimeframe),now=Date.now();
+    const totalSlotMs=selectedTimeframe*60*1000,msLeft=Math.max(0,slotEnd-now);
+    const msElapsed=totalSlotMs-msLeft,secsLeft=Math.floor(msLeft/1000);
+    const progress=Math.min(1,msElapsed/totalSlotMs);
+
+    // Timer ring
+    const ring=document.getElementById('timerRing'),tv=document.getElementById('timerVal');
+    if(ring&&tv){ring.style.strokeDashoffset=138.2*(1-progress);ring.style.stroke=secsLeft<60?'var(--dn)':secsLeft<120?'var(--btc)':'var(--up)';tv.textContent=secsLeft<60?secsLeft+'s':Math.ceil(secsLeft/60)+'m';}
+
+    const dir=document.getElementById('predDirection');
+    const sub=document.getElementById('predSubtext');
+    const cpEl=document.getElementById('confPercent');
+    const gpEl=document.getElementById('predGap');
+    const bar=document.getElementById('tradeTopBar');
+
+    if(!ptb||!predictionLock){return;}
+
+    const gap=Math.abs(price-ptb);
+    const aboveNow=price>ptb;
+    if(gpEl){gpEl.textContent=(aboveNow?'+':'-')+'$'+gap.toFixed(2);gpEl.style.color=aboveNow?'var(--up)':'var(--dn)';}
+
+    // Not locked yet — show analyzing with lean
+    if(!predictionLock.locked||predictionLock.direction===null){
+      const posData=getPositionBias();
+      const lean=posData.abovePct>0.5;
+      const stl=Math.max(0,90-Math.floor(msElapsed/1000));
+      if(dir){
+        dir.innerHTML='⏳ Leaning <span style="color:'+(lean?'var(--up)':'var(--dn)')+'">'+(lean?'↑ UP':'↓ DOWN')+'</span>';
+        dir.style.color='var(--tx2)';
+      }
+      if(sub)sub.textContent='Locks in ~'+stl+'s · '+(aboveNow?'+':'-')+'$'+gap.toFixed(0)+' from PTB · Above '+Math.round(posData.abovePct*100)+'% of slot';
+      if(cpEl){cpEl.textContent='--';cpEl.style.color='var(--tx2)';}
+      if(bar)bar.style.background='linear-gradient(90deg,var(--btc),#d4a017,var(--btc))';
+      return;
+    }
+
+    // Locked — show final prediction
+    const locked=predictionLock.direction;
+    const cp=m.currentPrediction;
+    const conf=cp?parseFloat(cp.confidence):60;
+
+    if(dir){
+      dir.innerHTML=locked?'<span style="color:var(--up)">↑ UP</span>':'<span style="color:var(--dn)">↓ DOWN</span>';
+      dir.innerHTML+=' <span style="font-size:.5em;color:var(--tx3);font-weight:400">🔒 LOCKED</span>';
+    }
+    if(sub)sub.textContent=(locked?'Will beat':'Won\'t beat')+' $'+ptb.toFixed(2)+' · '+(aboveNow?'+':'-')+'$'+gap.toFixed(0)+' gap · '+secsLeft+'s left';
+    if(cpEl){cpEl.textContent=conf+'%';cpEl.style.color=conf>=70?'var(--up)':conf>=55?'#eab308':'var(--dn)';}
+    if(bar)bar.style.background=locked?'linear-gradient(90deg,var(--up),#00b86e,var(--up))':'linear-gradient(90deg,var(--dn),#ff4757,var(--dn))';
+  }catch(e){console.warn('⚠️ updateTradeCard:',e);}
+}
+
+// Hook into updateDisplay every tick
+const _origUpdateDisplay=updateDisplay;
+updateDisplay=function(price,volume){
+  _origUpdateDisplay(price,volume);
+  try{updateTradeCard();}catch(e){}
+};
+
 let _heartbeatCount=0;
 setInterval(()=>{
   _heartbeatCount++;
